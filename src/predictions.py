@@ -117,16 +117,27 @@ def _simulate_group(
     teams: list[str],
     elos: dict[str, float],
     rng: np.random.Generator,
+    known_results: dict | None = None,
 ) -> list[tuple[str, int, int, int]]:
     """
     Simulate one 4-team group (round-robin).
     Returns list of (team, points, gf, ga) sorted by group-stage tiebreakers.
+
+    known_results: {(home, away): (home_goals, away_goals)} for already-played
+    matches. If (t1, t2) or (t2, t1) is present, use that score instead of
+    simulating.
     """
+    known_results = known_results or {}
     stats: dict[str, dict] = {t: {"pts": 0, "gf": 0, "ga": 0} for t in teams}
 
     for t1, t2 in combinations(teams, 2):
-        mu_a, mu_b = elo_to_expected_goals(elos[t1], elos[t2])
-        ga, gb = _sim_match(mu_a, mu_b, rng)
+        if (t1, t2) in known_results:
+            ga, gb = known_results[(t1, t2)]
+        elif (t2, t1) in known_results:
+            gb, ga = known_results[(t2, t1)]
+        else:
+            mu_a, mu_b = elo_to_expected_goals(elos[t1], elos[t2])
+            ga, gb = _sim_match(mu_a, mu_b, rng)
         stats[t1]["gf"] += ga
         stats[t1]["ga"] += gb
         stats[t2]["gf"] += gb
@@ -216,6 +227,7 @@ def run_simulation(
     elos: dict[str, float],
     n_sims: int = 50_000,
     seed: int | None = 42,
+    known_group_results: dict | None = None,
 ) -> dict[str, dict[str, float]]:
     """
     Monte Carlo simulation of the 2026 World Cup.
@@ -226,7 +238,11 @@ def run_simulation(
       etc.
 
     Keys: champion, finalist, semi, quarter, r16, group_win, qualified
+
+    known_group_results: optional dict from build_known_group_results()
+      {group_letter: {(home, away): (home_goals, away_goals)}}
     """
+    known_group_results = known_group_results or {}
     rng = np.random.default_rng(seed)
     all_teams = list(elos.keys())
 
@@ -241,7 +257,9 @@ def run_simulation(
         # ── Group stage ───────────────────────────────────────────────────
         group_results: dict[str, list[tuple]] = {}
         for g, teams in GROUPS.items():
-            group_results[g] = _simulate_group(teams, elos, rng)
+            group_results[g] = _simulate_group(
+                teams, elos, rng, known_results=known_group_results.get(g, {})
+            )
 
         for g in group_order:
             counters["group_win"][group_results[g][0][0]] += 1
@@ -294,17 +312,22 @@ def run_group_simulation(
     elos: dict[str, float],
     n_sims: int = 50_000,
     seed: int | None = 42,
+    known_results: dict | None = None,
 ) -> dict[str, dict[str, float]]:
     """
     Simulate a single group n_sims times.
     Returns {team: {1st: prob, 2nd: prob, 3rd: prob, 4th: prob}}.
+
+    known_results: {(home, away): (home_goals, away_goals)} for already-played
+    fixtures in this group.
     """
+    known_results = known_results or {}
     rng = np.random.default_rng(seed)
     teams = GROUPS[group_letter]
     finish_counts = {t: {1: 0, 2: 0, 3: 0, 4: 0} for t in teams}
 
     for _ in range(n_sims):
-        standings = _simulate_group(teams, elos, rng)
+        standings = _simulate_group(teams, elos, rng, known_results=known_results)
         for rank, (team, *_rest) in enumerate(standings, start=1):
             finish_counts[team][rank] += 1
 
