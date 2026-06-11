@@ -183,21 +183,25 @@ _live_hash = hash(tuple(
 ))
 
 
-@st.cache_resource
-def _compute_live_sim(_h: int) -> dict:
-    # When no results have been entered, reuse the pre-computed baseline (instant).
-    # Only re-run the simulation when actual match results are present.
-    _res = st.session_state.get("results_2026", [])
-    if not _res:
-        return payload   # baseline payload from disk cache — zero extra computation
+@st.cache_data(show_spinner="Updating simulation…")
+def _compute_live_sim(_h: int, _res_tuple: tuple, _base_elos: dict) -> dict:
+    """Re-run simulation only when actual results exist; otherwise reuse baseline."""
+    if not _res_tuple:
+        return payload
+    _res   = list(_res_tuple)
     _known = build_known_group_results(_res)
-    _elos  = apply_results_to_elo(elos, _res)
+    _elos  = apply_results_to_elo(_base_elos, _res)
     _sim   = run_simulation(_elos, n_sims=20_000, seed=42, known_group_results=_known)
     return {"simulation": _sim, "group_probs": payload["group_probs"],
             "elos": _elos, "n_sims": 20_000}
 
 
-_live_payload = _compute_live_sim(_live_hash)
+# Convert results list to a hashable tuple for the cache key
+_live_res_tuple = tuple(
+    (r["home"], r["away"], r["home_score"], r["away_score"])
+    for r in sorted(_live_results_global, key=lambda x: (x["date"], x["home"]))
+)
+_live_payload = _compute_live_sim(_live_hash, _live_res_tuple, elos)
 live_sim  = _live_payload["simulation"]
 live_elos = apply_results_to_elo(elos, _live_results_global)
 
