@@ -1,5 +1,5 @@
 """
-2026 World Cup — Exploratory Model Dashboard
+2026 World Cup Prediction Model
 Run: streamlit run app.py
 """
 
@@ -14,7 +14,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.config import ALL_TEAMS, GROUPS, load_market_odds
+from src.config import ALL_TEAMS, GROUPS
 from src.elo_model import get_elo_ratings, get_historical_h2h
 from src.predictions import predict_match, run_group_simulation, run_simulation
 from src.precompute import load_cache
@@ -45,7 +45,7 @@ STAGE_LABELS = {
 }
 
 FLAG_EMOJI: dict[str, str] = {
-    "Mexico": "🇲🇽", "South Africa": "🇿🇦", "South Korea": "🇰🇷", "Czech Republic": "🇨🇿",
+    "Mexico": "🇲🇽", "South Africa": "🇿🇦", "South Korea": "🇰🇷", "Czechia": "🇨🇿",
     "Canada": "🇨🇦", "Bosnia and Herzegovina": "🇧🇦", "Qatar": "🇶🇦", "Switzerland": "🇨🇭",
     "Brazil": "🇧🇷", "Morocco": "🇲🇦", "Haiti": "🇭🇹", "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
     "United States": "🇺🇸", "Paraguay": "🇵🇾", "Australia": "🇦🇺", "Turkey": "🇹🇷",
@@ -137,7 +137,6 @@ elos = _load_elos()
 payload = _load_simulation(n_sims, seed)
 sim = payload["simulation"]
 group_probs_all = payload["group_probs"]
-market_odds = load_market_odds()   # dict[team, decimal_odds] from data/market_odds.csv
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -145,141 +144,92 @@ market_odds = load_market_odds()   # dict[team, decimal_odds] from data/market_o
 # ──────────────────────────────────────────────────────────────────────────────
 
 if page == "Title Odds":
-    st.header("Title Odds — Model vs Market")
-    st.caption(
-        "Model: Elo-based Poisson simulation.  "
-        "Market: implied probabilities from pre-tournament decimal odds (Pinnacle/Betfair)."
+
+    team_group = {t: g for g, teams in GROUPS.items() for t in teams}
+    champ  = sim["champion"]
+    ranked = sorted(ALL_TEAMS, key=lambda t: champ.get(t, 0), reverse=True)
+
+    # ── Page header ───────────────────────────────────────────────────────────
+    st.markdown(
+        f"""
+        <p style="color:#ff6b35;font-size:12px;font-weight:700;letter-spacing:2px;
+                  text-transform:uppercase;margin-bottom:4px;">The Model's View</p>
+        <h1 style="font-size:44px;font-weight:800;margin:0 0 8px 0;">
+            Who wins the World Cup?
+        </h1>
+        <p style="color:#888;font-size:15px;margin:0 0 28px 0;">
+            Every number is drawn from simulating the entire tournament
+            <b>{payload['n_sims']:,}</b> times.
+            Sense-check your gut before you lock in picks.
+        </p>
+        """,
+        unsafe_allow_html=True,
     )
 
-    # Build comparison dataframe
-    champ = sim["champion"]
-    rows = []
-    for team in ALL_TEAMS:
-        model_p = champ.get(team, 0.0)
-        mkt_odds = market_odds.get(team)
-        mkt_p = (1.0 / mkt_odds) if mkt_odds else None
-        rows.append(
-            {
-                "Team": f"{flag(team)} {team}",
-                "Model %": round(model_p * 100, 2),
-                "Market %": round(mkt_p * 100, 2) if mkt_p else None,
-                "Edge (Model − Market)": (
-                    round((model_p - mkt_p) * 100, 2) if mkt_p else None
-                ),
-                "_model": model_p,
-                "_mkt": mkt_p,
-            }
+    # ── Top-3 hero cards ──────────────────────────────────────────────────────
+    CARD_LABELS = ["FAVOURITE", "SECOND FAVOURITE", "THIRD FAVOURITE"]
+    cols3 = st.columns(3)
+    for col, team, label in zip(cols3, ranked[:3], CARD_LABELS):
+        p = champ.get(team, 0)
+        g = team_group.get(team, "?")
+        col.markdown(
+            f"""
+            <div style="background:#1e1e2e;border-radius:12px;padding:22px 24px;
+                        border:1px solid #2a2a3a;height:170px;">
+                <div style="font-size:10px;font-weight:700;letter-spacing:2px;
+                            color:#888;text-transform:uppercase;margin-bottom:10px;">
+                    {label}
+                </div>
+                <div style="font-size:24px;font-weight:700;margin-bottom:2px;">
+                    {flag(team)} {team}
+                </div>
+                <div style="font-size:46px;font-weight:800;color:#ff6b35;
+                            line-height:1.1;margin-bottom:6px;">
+                    {p*100:.1f}%
+                </div>
+                <div style="font-size:12px;color:#555;">
+                    to lift the trophy · Group {g}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-    df = (
-        pd.DataFrame(rows)
-        .sort_values("_model", ascending=False)
-        .reset_index(drop=True)
-    )
-    df.index = range(1, len(df) + 1)
+    st.markdown("<br>", unsafe_allow_html=True)
 
-    # Top filter
-    col_a, col_b = st.columns([2, 1])
-    with col_a:
-        show_top_n = st.slider("Show top N teams", 5, 48, 20, key="top_n_title")
-    with col_b:
-        sort_by = st.selectbox("Sort by", ["Model %", "Market %", "Edge (Model − Market)"])
-
-    df_top = (
-        df.sort_values(sort_by, ascending=False, na_position="last")
-        .head(show_top_n)
+    # ── Circle grid — all 48 teams ────────────────────────────────────────────
+    st.markdown(
+        '<h3 style="margin-bottom:4px;">All contenders — chance to win</h3>',
+        unsafe_allow_html=True,
     )
 
-    # Main chart
-    fig = go.Figure()
-    fig.add_trace(
-        go.Bar(
-            name="Model",
-            x=df_top["Team"],
-            y=df_top["Model %"],
-            marker_color="#1f77b4",
-        )
-    )
-    fig.add_trace(
-        go.Bar(
-            name="Market implied",
-            x=df_top["Team"],
-            y=df_top["Market %"],
-            marker_color="#ff7f0e",
-        )
-    )
-    fig.update_layout(
-        barmode="group",
-        xaxis_tickangle=-40,
-        yaxis_title="Championship probability (%)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=480,
-        margin=dict(t=20, b=120),
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    items = ""
+    for team in ranked:
+        p = champ.get(team, 0)
+        items += f"""
+        <div style="text-align:center;padding:10px 4px;">
+            <div style="font-size:24px;margin-bottom:6px;">{flag(team)}</div>
+            <div style="width:80px;height:80px;border-radius:50%;
+                        border:3px solid #ff6b35;
+                        display:flex;align-items:center;justify-content:center;
+                        margin:0 auto 8px;font-size:14px;font-weight:800;
+                        color:#ff6b35;">
+                {p*100:.1f}%
+            </div>
+            <div style="font-size:11px;font-weight:500;color:#ccc;
+                        max-width:96px;margin:0 auto;
+                        overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                {team}
+            </div>
+        </div>"""
 
-    # Edge chart (model − market)
-    st.subheader("Model edge over market (pp)")
-    df_edge = df_top.dropna(subset=["Edge (Model − Market)"]).copy()
-    df_edge = df_edge.sort_values("Edge (Model − Market)", ascending=True)
-    colors = ["#2ca02c" if v >= 0 else "#d62728" for v in df_edge["Edge (Model − Market)"]]
-    fig2 = go.Figure(
-        go.Bar(
-            x=df_edge["Edge (Model − Market)"],
-            y=df_edge["Team"],
-            orientation="h",
-            marker_color=colors,
-        )
-    )
-    fig2.update_layout(
-        xaxis_title="Edge (percentage points)",
-        height=max(300, 22 * len(df_edge)),
-        margin=dict(t=10, b=30),
-    )
-    st.plotly_chart(fig2, use_container_width=True)
-
-    # Sortable table
-    st.subheader("Full table")
-    display_df = df[["Team", "Model %", "Market %", "Edge (Model − Market)"]].copy()
-    display_df = display_df.sort_values(sort_by, ascending=False, na_position="last")
-    st.dataframe(
-        display_df.style.format(
-            {"Model %": "{:.2f}", "Market %": "{:.2f}", "Edge (Model − Market)": "{:+.2f}"},
-            na_rep="—",
-        ).background_gradient(subset=["Model %"], cmap="Blues"),
-        use_container_width=True,
-        height=600,
+    st.markdown(
+        f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));'
+        f'gap:6px;margin-top:8px;">{items}</div>',
+        unsafe_allow_html=True,
     )
 
-    st.divider()
-    # Deep dive: round-by-round probabilities for one team
-    st.subheader("Round-by-round probabilities")
-    selected_team = st.selectbox(
-        "Select team",
-        sorted(ALL_TEAMS),
-        format_func=lambda t: f"{flag(t)} {t}",
-        key="rr_team",
-    )
-    stages = ["group_win", "qualified", "r16", "quarter", "semi", "finalist", "champion"]
-    probs = [sim[s].get(selected_team, 0) for s in stages]
-    labels = [STAGE_LABELS.get(s, s) for s in stages]
-
-    fig3 = go.Figure(
-        go.Bar(
-            x=labels,
-            y=[p * 100 for p in probs],
-            marker_color="#1f77b4",
-            text=[fmt_pct(p) for p in probs],
-            textposition="outside",
-        )
-    )
-    fig3.update_layout(
-        yaxis=dict(title="Probability (%)", range=[0, 105]),
-        height=380,
-        margin=dict(t=10, b=60),
-    )
-    st.plotly_chart(fig3, use_container_width=True)
-    st.caption(f"Elo rating: **{elos.get(selected_team, 1500):.0f}**  |  n_sims = {n_sims:,}")
+    st.caption(f"Model: Elo + Poisson · {n_sims:,} simulations")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -348,10 +298,7 @@ elif page == "Group Stage":
     display_cols = ["Team", "Elo", "1st", "2nd", "3rd", "4th"]
     fmt = {c: "{:.1%}" for c in labels_pos}
     st.dataframe(
-        df_g[display_cols]
-        .style.format(fmt)
-        .background_gradient(subset=["1st"], cmap="Greens")
-        .background_gradient(subset=["4th"], cmap="Reds"),
+        df_g[display_cols].style.format(fmt),
         use_container_width=True,
         hide_index=True,
     )
@@ -538,10 +485,10 @@ elif page == "Tournament Path":
     )
 
     stages_ordered = [
-        "group_win", "qualified", "r16", "quarter", "semi", "finalist", "champion"
+        "group_win", "r16", "quarter", "semi", "finalist", "champion"
     ]
     stage_nice = [
-        "Win Group", "Qualify", "Reach R16", "Reach QF", "Reach SF", "Reach Final", "Champion"
+        "Win Group", "Reach R16", "Reach QF", "Reach SF", "Reach Final", "Champion"
     ]
 
     probs = [sim[s].get(selected, 0) for s in stages_ordered]
@@ -553,7 +500,7 @@ elif page == "Tournament Path":
             x=[p * 100 for p in probs],
             textinfo="value+percent initial",
             marker_color=[
-                "#d4e6f1", "#85c1e9", "#3498db", "#1a5276",
+                "#85c1e9", "#3498db", "#1a5276",
                 "#e74c3c", "#c0392b", "#922b21"
             ],
         )
@@ -579,7 +526,7 @@ elif page == "Tournament Path":
             "Elo": [f"{elos.get(t, 1500):.0f}" for t in rivals],
             **{
                 STAGE_LABELS[s]: [fmt_pct(sim[s].get(t, 0)) for t in rivals]
-                for s in ["group_win", "qualified", "r16", "champion"]
+                for s in ["group_win", "r16", "champion"]
             },
         }
         st.dataframe(pd.DataFrame(cmp_data), use_container_width=True, hide_index=True)
