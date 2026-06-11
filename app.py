@@ -20,7 +20,8 @@ from src.live_model import (
     get_group_standings,
     load_saved_results,
 )
-from src.predictions import predict_match, run_group_simulation, run_simulation
+from src.predictions import elo_to_expected_goals, predict_match, run_group_simulation, run_simulation
+from src.schedule import get_schedule
 from src.precompute import load_cache
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -92,6 +93,18 @@ def flag(team: str) -> str:
 
 def fmt_pct(p: float) -> str:
     return f"{p * 100:.1f}%"
+
+
+def _top_scores(elo_a: float, elo_b: float, n: int = 5, max_goals: int = 7) -> list[tuple[int, int, float]]:
+    """Return the n most probable exact scorelines sorted by probability."""
+    mu_a, mu_b = elo_to_expected_goals(elo_a, elo_b)
+    scores = [
+        (i, j, _poisson.pmf(i, mu_a) * _poisson.pmf(j, mu_b))
+        for i in range(max_goals + 1)
+        for j in range(max_goals + 1)
+    ]
+    scores.sort(key=lambda x: x[2], reverse=True)
+    return scores[:n]
 
 
 def _hbar_list(teams_probs: list[tuple[str, float]], max_p: float, start_rank: int = 1) -> str:
@@ -222,11 +235,12 @@ def _expected_group_pos(group: str, pos: int) -> tuple[str, float]:
 
 # ── Navigation tabs ───────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🏆 Title Odds",
     "⚽ Groups",
     "📊 Match Predictor",
     "⚔️ H2H",
+    "🎯 Bet Predictor",
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -648,6 +662,152 @@ with tab4:
             )
             if len(h2h) > 25:
                 st.caption(f"Showing 25 of {len(h2h)} matches.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 5 — Bet Predictor
+# ══════════════════════════════════════════════════════════════════════════════
+
+with tab5:
+    TODAY = "2026-06-11"
+
+    st.markdown(
+        '<h2 style="margin-bottom:2px;">Bet Predictor</h2>'
+        '<p style="color:#888;font-size:13px;margin-bottom:16px;">'
+        'Model-predicted exact scores for every match, ranked by probability. '
+        'Based on Elo + Poisson — same engine that powers the bracket.</p>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Matchday filter ────────────────────────────────────────────────────────
+    _all_fixtures = get_schedule()
+    _md_choice = st.radio(
+        "Matchday",
+        ["Today", "All MD1", "All MD2", "All MD3"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    if _md_choice == "Today":
+        _shown = [f for f in _all_fixtures if f["date"] == TODAY]
+    elif _md_choice == "All MD1":
+        _shown = [f for f in _all_fixtures if f["matchday"] == 1]
+    elif _md_choice == "All MD2":
+        _shown = [f for f in _all_fixtures if f["matchday"] == 2]
+    else:
+        _shown = [f for f in _all_fixtures if f["matchday"] == 3]
+
+    # ── Group fixtures by date for headers ─────────────────────────────────────
+    _by_date: dict[str, list] = {}
+    for _f in _shown:
+        _by_date.setdefault(_f["date"], []).append(_f)
+
+    _MONTH = {
+        "06": "June",
+    }
+
+    def _date_label(d: str) -> str:
+        _y, _m, _day = d.split("-")
+        _suffix = {"1":"st","2":"nd","3":"rd"}.get(_day.lstrip("0")[-1], "th")
+        if _day.lstrip("0") in ("11","12","13"):
+            _suffix = "th"
+        return f"{_MONTH.get(_m, _m)} {int(_day)}{_suffix}, {_y}"
+
+    def _bet_card(fix: dict, ea: float, eb: float, is_today: bool) -> str:
+        home, away = fix["home"], fix["away"]
+        pr = predict_match(ea, eb)
+        top = _top_scores(ea, eb, n=5)
+        mls_a, mls_b = pr["most_likely_score"]
+
+        border = "#ff6b35" if is_today else "#2a2a3a"
+        bg     = "#1e1e35" if is_today else "#1e1e2e"
+
+        # Score rows
+        score_rows = ""
+        for ga, gb, p in top:
+            is_ml = (ga == mls_a and gb == mls_b)
+            row_bg   = "background:#2d1a08;border-radius:4px;padding:1px 4px;" if is_ml else "padding:1px 4px;"
+            name_col = "#ff6b35" if is_ml else "#888"
+            pct_col  = "#ff6b35" if is_ml else "#555"
+            star     = " ★" if is_ml else ""
+            score_rows += (
+                f'<div style="display:flex;justify-content:space-between;margin-bottom:3px;{row_bg}">'
+                f'<span style="font-size:12px;color:{name_col};font-weight:{"700" if is_ml else "400"};">'
+                f'{home[:3].upper()} {ga}–{gb} {away[:3].upper()}</span>'
+                f'<span style="font-size:12px;color:{pct_col};font-weight:{"700" if is_ml else "400"};">'
+                f'{p*100:.1f}%{star}</span>'
+                f'</div>'
+            )
+
+        today_badge = (
+            '<div style="font-size:10px;font-weight:700;color:#ff6b35;'
+            'background:#2a1000;padding:3px 10px;border-radius:12px;'
+            'white-space:nowrap;">TODAY</div>'
+            if is_today else ""
+        )
+
+        return (
+            f'<div style="background:{bg};border:1px solid {border};'
+            f'border-radius:10px;padding:14px;margin-bottom:10px;">'
+            # Header
+            f'<div style="display:flex;justify-content:space-between;'
+            f'align-items:flex-start;margin-bottom:10px;">'
+            f'<div>'
+            f'<div style="font-size:15px;font-weight:700;">'
+            f'{flag(home)} {home} <span style="color:#444;">vs</span> {flag(away)} {away}'
+            f'</div>'
+            f'<div style="font-size:11px;color:#555;margin-top:1px;">'
+            f'Group {fix["group"]} · Matchday {fix["matchday"]}'
+            f'</div>'
+            f'</div>'
+            f'{today_badge}'
+            f'</div>'
+            # Body: scores + odds side by side
+            f'<div style="display:flex;gap:14px;align-items:flex-start;">'
+            # Left: top scores
+            f'<div style="flex:1;">'
+            f'<div style="font-size:10px;color:#555;letter-spacing:1px;'
+            f'text-transform:uppercase;margin-bottom:5px;">Top scores ★ = most likely</div>'
+            f'{score_rows}'
+            f'</div>'
+            # Right: win/draw/loss
+            f'<div style="min-width:88px;border-left:1px solid #2a2a3a;'
+            f'padding-left:12px;text-align:left;">'
+            f'<div style="font-size:10px;color:#555;letter-spacing:1px;'
+            f'text-transform:uppercase;margin-bottom:5px;">Outcome</div>'
+            f'<div style="font-size:12px;margin-bottom:3px;">'
+            f'{flag(home)} Win &nbsp;<b style="color:#ff6b35;">{pr["win"]*100:.0f}%</b></div>'
+            f'<div style="font-size:12px;margin-bottom:3px;">'
+            f'Draw &nbsp;<b style="color:#888;">{pr["draw"]*100:.0f}%</b></div>'
+            f'<div style="font-size:12px;">'
+            f'{flag(away)} Win &nbsp;<b style="color:#4a9eff;">{pr["loss"]*100:.0f}%</b></div>'
+            f'</div>'
+            f'</div>'
+            f'</div>'
+        )
+
+    # ── Render cards ───────────────────────────────────────────────────────────
+    if not _shown:
+        st.info("No matches scheduled for the selected filter.")
+    else:
+        for _date, _fixtures in sorted(_by_date.items()):
+            _is_today = (_date == TODAY)
+            _hdr_color = "#ff6b35" if _is_today else "#aaa"
+            st.markdown(
+                f'<div style="font-size:13px;font-weight:700;color:{_hdr_color};'
+                f'letter-spacing:1px;text-transform:uppercase;'
+                f'margin:18px 0 8px 0;border-bottom:1px solid #2a2a3a;'
+                f'padding-bottom:4px;">'
+                f'{"🔴 " if _is_today else ""}{_date_label(_date)}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            for _fx in _fixtures:
+                _ea = live_elos.get(_fx["home"], 1500)
+                _eb = live_elos.get(_fx["away"], 1500)
+                st.markdown(_bet_card(_fx, _ea, _eb, _is_today), unsafe_allow_html=True)
+
+    st.caption("Probabilities from Elo + Poisson model · ★ = single most likely exact score")
 
 
 # ── Footer ────────────────────────────────────────────────────────────────────
