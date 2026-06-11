@@ -130,6 +130,95 @@ def _load_h2h(team_a: str, team_b: str) -> pd.DataFrame:
     return get_historical_h2h(team_a, team_b)
 
 
+# ESPN display name → our canonical name
+_ESPN_NAMES: dict[str, str] = {
+    "Czech Republic":        "Czechia",
+    "Bosnia-Herzegovina":    "Bosnia and Herzegovina",
+    "Curacao":               "Curaçao",
+    "Congo DR":              "DR Congo",
+    "Côte d'Ivoire":         "Ivory Coast",
+    "Cape Verde Islands":    "Cape Verde",
+    "USA":                   "United States",
+    "Korea Republic":        "South Korea",
+    "Republic of Ireland":   "Ireland",
+}
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _fetch_live_scores() -> dict[tuple[str, str], dict]:
+    """
+    Pull live/final scores from ESPN's public scoreboard endpoint.
+    Returns {(canonical_home, canonical_away): {score_h, score_a, status, is_live, is_final}}.
+    Silently returns {} on any network error.
+    TTL=60s so the app stays fresh during live matches without hammering the API.
+    """
+    import requests  # noqa: PLC0415
+    try:
+        resp = requests.get(
+            "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard",
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return {}
+
+    def _canon(name: str) -> str:
+        return _ESPN_NAMES.get(name, name)
+
+    out: dict[tuple[str, str], dict] = {}
+    for event in data.get("events", []):
+        comps = event.get("competitions", [{}])[0]
+        competitors = comps.get("competitors", [])
+        if len(competitors) < 2:
+            continue
+        home_c = next((c for c in competitors if c.get("homeAway") == "home"), competitors[0])
+        away_c = next((c for c in competitors if c.get("homeAway") == "away"), competitors[1])
+
+        h_name = _canon(home_c.get("team", {}).get("displayName", ""))
+        a_name = _canon(away_c.get("team", {}).get("displayName", ""))
+        h_score = home_c.get("score", "")
+        a_score = away_c.get("score", "")
+
+        st_obj  = event.get("status", {})
+        st_type = st_obj.get("type", {}).get("name", "")
+        clock   = st_obj.get("displayClock", "")
+        period  = st_obj.get("period", 0)
+
+        _live_types = {"STATUS_IN_PROGRESS", "STATUS_FIRST_HALF", "STATUS_SECOND_HALF",
+                       "STATUS_EXTRA_TIME", "STATUS_PENALTY"}
+        is_live  = st_type in _live_types
+        is_ht    = st_type == "STATUS_HALFTIME"
+        is_final = st_type == "STATUS_FINAL"
+
+        if st_type == "STATUS_FIRST_HALF":
+            display = f"🔴 LIVE {clock} 1H"
+        elif st_type == "STATUS_SECOND_HALF":
+            display = f"🔴 LIVE {clock} 2H"
+        elif st_type == "STATUS_EXTRA_TIME":
+            display = f"🔴 LIVE {clock} ET"
+        elif st_type == "STATUS_PENALTY":
+            display = "🔴 LIVE PENS"
+        elif is_live:
+            half = "2H" if period >= 2 else "1H"
+            display = f"🔴 LIVE {clock} {half}"
+        elif is_ht:
+            display = "⏸ HALF TIME"
+        elif is_final:
+            display = "✅ FULL TIME"
+        else:
+            display = st_obj.get("type", {}).get("shortDetail", "")
+
+        out[(h_name, a_name)] = {
+            "score_h": h_score,
+            "score_a": a_score,
+            "status":  display,
+            "is_live": is_live or is_ht,
+            "is_final": is_final,
+        }
+    return out
+
+
 # ── Settings (collapsed expander) ────────────────────────────────────────────
 
 with st.expander("⚙️ Model settings", expanded=False):
@@ -258,14 +347,14 @@ _champ = _proj_winner(*_fin)
 # ══════════════════════════════════════════════════════════════════════════════
 
 _NAV = [
-    ("bet",     "🎯 Bet Predictor"),
     ("odds",    "🏆 Title Odds"),
+    ("bet",     "🎯 Bet Predictor"),
     ("groups",  "⚽ Groups"),
     ("bracket", "📊 Match Predictor"),
     ("h2h",     "⚔️ H2H"),
 ]
 
-_active = st.query_params.get("tab", "bet")
+_active = st.query_params.get("tab", "odds")
 if _active not in {k for k, _ in _NAV}:
     _active = "bet"
 
@@ -318,6 +407,8 @@ if _active == "bet":
         _sfx = "th" if 11 <= _n <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(_n % 10, "th")
         return f"June {_n}{_sfx}, 2026"
 
+    _live_scores = _fetch_live_scores()
+
     def _score_card(home: str, away: str, ea: float, eb: float,
                     label: str = "", is_today: bool = False) -> str:
         pr    = predict_match(ea, eb)
@@ -328,48 +419,98 @@ if _active == "bet":
             f"{home[:3].upper()} {ga}–{gb} {away[:3].upper()} ({p*100:.0f}%)"
             for ga, gb, p in alts
         )
-        border = "#ff6b35" if is_today else "#2a2a3a"
+
+        # Live score lookup (try both orderings)
+        live = _live_scores.get((home, away)) or _live_scores.get((away, home))
+        if live and _live_scores.get((away, home)) and not _live_scores.get((home, away)):
+            # Scores were stored with teams swapped — flip them
+            live = {**live, "score_h": live["score_a"], "score_a": live["score_h"]}
+
+        has_live  = live is not None
+        is_active = has_live and live["is_live"]
+        is_final  = has_live and live["is_final"]
+
+        border = "#ff6b35" if is_today else ("#22aa55" if is_final else ("#cc2200" if is_active else "#2a2a3a"))
         bg     = "#1b1b2e" if is_today else "#181828"
+
         today_badge = (
             '<span style="font-size:10px;font-weight:700;color:#ff6b35;'
-            'background:#2a1000;padding:2px 8px;border-radius:10px;margin-left:8px;">'
+            'background:#2a1000;padding:2px 8px;border-radius:10px;margin-left:6px;">'
             'TODAY</span>' if is_today else ""
         )
+        live_badge = ""
+        if is_active:
+            live_badge = (
+                f'<span style="font-size:10px;font-weight:700;color:#fff;'
+                f'background:#cc2200;padding:2px 8px;border-radius:10px;margin-left:6px;">'
+                f'{live["status"]}</span>'
+            )
+        elif is_final:
+            live_badge = (
+                '<span style="font-size:10px;font-weight:700;color:#22aa55;'
+                'background:#0a2a14;padding:2px 8px;border-radius:10px;margin-left:6px;">'
+                '✅ FULL TIME</span>'
+            )
+
         lbl_html = (
             f'<div style="font-size:10px;color:#666;letter-spacing:1px;'
-            f'text-transform:uppercase;margin-bottom:8px;">{label}{today_badge}</div>'
-        ) if label else ""
+            f'text-transform:uppercase;margin-bottom:8px;">{label}{today_badge}{live_badge}</div>'
+        ) if (label or today_badge or live_badge) else ""
+
         winner = home if pr["win"] >= pr["loss"] else away
         hcol = "#ff6b35" if winner == home else "#ddd"
         acol = "#ff6b35" if winner == away else "#ddd"
-        return (
-            f'<div style="background:{bg};border:1px solid {border};'
-            f'border-radius:10px;padding:12px 14px;margin-bottom:10px;">'
-            f'{lbl_html}'
-            f'<div style="display:flex;align-items:center;gap:8px;">'
-            # Home team
-            f'<div style="flex:1;text-align:right;">'
-            f'<div style="font-size:15px;font-weight:700;color:{hcol};">{flag(home)} {home}</div>'
-            f'<div style="font-size:11px;color:#555;margin-top:2px;">{pr["win"]*100:.0f}% win</div>'
-            f'</div>'
-            # Score box
-            f'<div style="background:#0d1117;border:2px solid {"#ff6b35" if is_today else "#333"};'
-            f'border-radius:8px;padding:6px 12px;text-align:center;flex-shrink:0;min-width:70px;">'
-            f'<div style="font-size:26px;font-weight:900;color:#fff;line-height:1;letter-spacing:2px;">'
-            f'{mls_a} – {mls_b}</div>'
-            f'<div style="font-size:8px;color:#ff6b35;letter-spacing:1px;margin-top:2px;">MODEL PICK</div>'
-            f'</div>'
-            # Away team
-            f'<div style="flex:1;text-align:left;">'
-            f'<div style="font-size:15px;font-weight:700;color:{acol};">{flag(away)} {away}</div>'
-            f'<div style="font-size:11px;color:#555;margin-top:2px;">{pr["loss"]*100:.0f}% win</div>'
-            f'</div>'
-            f'</div>'
+
+        # Score box — live/final score on top, model pick below
+        if has_live and (is_active or is_final):
+            sh = live["score_h"]
+            sa = live["score_a"]
+            score_box_color = "#cc2200" if is_active else "#22aa55"
+            score_box = (
+                f'<div style="background:#0d1117;border:2px solid {score_box_color};'
+                f'border-radius:8px;padding:5px 12px;text-align:center;flex-shrink:0;min-width:70px;">'
+                f'<div style="font-size:26px;font-weight:900;color:#fff;line-height:1;letter-spacing:2px;">'
+                f'{sh} – {sa}</div>'
+                f'<div style="font-size:8px;color:{score_box_color};letter-spacing:1px;margin-top:1px;">'
+                f'{"LIVE" if is_active else "FINAL"}</div>'
+                f'<div style="font-size:9px;color:#444;margin-top:3px;letter-spacing:0;">'
+                f'Model: {mls_a}–{mls_b}</div>'
+                f'</div>'
+            )
+        else:
+            score_box = (
+                f'<div style="background:#0d1117;border:2px solid {"#ff6b35" if is_today else "#333"};'
+                f'border-radius:8px;padding:6px 12px;text-align:center;flex-shrink:0;min-width:70px;">'
+                f'<div style="font-size:26px;font-weight:900;color:#fff;line-height:1;letter-spacing:2px;">'
+                f'{mls_a} – {mls_b}</div>'
+                f'<div style="font-size:8px;color:#ff6b35;letter-spacing:1px;margin-top:2px;">MODEL PICK</div>'
+                f'</div>'
+            )
+
+        footer = (
             f'<div style="margin-top:8px;font-size:11px;color:#555;text-align:center;">'
             f'Draw {pr["draw"]*100:.0f}%'
             f'<span style="margin:0 8px;color:#2a2a3a;">|</span>'
             f'<span style="color:#444;">Also: {alt_txt}</span>'
             f'</div>'
+        )
+
+        return (
+            f'<div style="background:{bg};border:1px solid {border};'
+            f'border-radius:10px;padding:12px 14px;margin-bottom:10px;">'
+            f'{lbl_html}'
+            f'<div style="display:flex;align-items:center;gap:8px;">'
+            f'<div style="flex:1;text-align:right;">'
+            f'<div style="font-size:15px;font-weight:700;color:{hcol};">{flag(home)} {home}</div>'
+            f'<div style="font-size:11px;color:#555;margin-top:2px;">{pr["win"]*100:.0f}% win</div>'
+            f'</div>'
+            f'{score_box}'
+            f'<div style="flex:1;text-align:left;">'
+            f'<div style="font-size:15px;font-weight:700;color:{acol};">{flag(away)} {away}</div>'
+            f'<div style="font-size:11px;color:#555;margin-top:2px;">{pr["loss"]*100:.0f}% win</div>'
+            f'</div>'
+            f'</div>'
+            f'{footer}'
             f'</div>'
         )
 
