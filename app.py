@@ -464,79 +464,116 @@ with tab3:
             </div>
         </div>"""
 
+    # ── Build R32 bracket as an ordered list of 16 (team_a, team_b) pairs ──────
+    # Bracket order matters: winners of M1/M2 meet in R16, M3/M4 meet, etc.
+    # M1-M8 : Group A-H winners vs projected best-3rd teams
+    # M9-M12: Group I-L winners vs Group A-D runners-up
+    # M13-M16: Group I-L runners-up vs Group E-H runners-up
+
+    def _proj_winner(ta: str, tb: str) -> str:
+        """Return the Elo-favoured winner of a neutral-venue match."""
+        pred = predict_match(live_elos.get(ta, 1500), live_elos.get(tb, 1500))
+        return ta if pred["win"] >= pred["loss"] else tb
+
+    def _advance(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """Propagate one knockout round: winners of adjacent matches pair up."""
+        next_round = []
+        for i in range(0, len(pairs), 2):
+            w1 = _proj_winner(*pairs[i])
+            w2 = _proj_winner(*pairs[i + 1])
+            next_round.append((w1, w2))
+        return next_round
+
+    # Compute best-3rd candidates (teams most likely to qualify as 3rd place)
+    _all_thirds = []
+    for _g in _grp_order:
+        for _t in GROUPS[_g]:
+            _p3 = max(0.0, live_sim["qualified"].get(_t, 0)
+                      - live_sim["group_win"].get(_t, 0)
+                      - max(0.0, live_sim["qualified"].get(_t, 0) - live_sim["group_win"].get(_t, 0) - 0.3))
+            _all_thirds.append((_t, live_sim["qualified"].get(_t, 0) - live_sim["group_win"].get(_t, 0)))
+    _all_thirds = sorted(_all_thirds, key=lambda x: x[1], reverse=True)
+    # Deduplicate: one entry per team
+    _seen_t = set()
+    _best_thirds: list[str] = []
+    for _t, _ in _all_thirds:
+        if _t not in _seen_t and live_sim["group_win"].get(_t, 1) < 0.55:
+            _seen_t.add(_t)
+            _best_thirds.append(_t)
+        if len(_best_thirds) == 8:
+            break
+
+    _r32_pairs: list[tuple[str, str]] = []
+    for i in range(8):
+        _w, _wp = _expected_group_pos(_grp_order[i], 1)
+        _t3 = _best_thirds[7 - i] if i < len(_best_thirds) else "TBD"
+        _t3p = live_sim["qualified"].get(_t3, 0) if _t3 != "TBD" else 0.0
+        _r32_pairs.append((_w, _t3))
+    for i in range(4):
+        _w, _wp  = _expected_group_pos(_grp_order[8 + i], 1)
+        _r, _rp  = _expected_group_pos(_grp_order[i], 2)
+        _r32_pairs.append((_w, _r))
+    for i in range(4):
+        _r1, _r1p = _expected_group_pos(_grp_order[8 + i], 2)
+        _r2, _r2p = _expected_group_pos(_grp_order[4 + i], 2)
+        _r32_pairs.append((_r1, _r2))
+
+    # Propagate through rounds using bracket structure
+    _r16_pairs = _advance(_r32_pairs)   # winners of M1/M2, M3/M4, … meet
+    _qf_pairs  = _advance(_r16_pairs)
+    _sf_pairs  = _advance(_qf_pairs)
+    _final_pair = _advance(_sf_pairs)[0]
+
+    def _qual_p(team: str, round_pairs) -> float:
+        """Rough P(team reaches this round) from simulation."""
+        stage_map = {4: "semi", 8: "quarter", 16: "r16", 32: "qualified"}
+        return live_sim.get(stage_map.get(len(round_pairs) * 2, "champion"), {}).get(team, 0)
+
     # ── R32 ────────────────────────────────────────────────────────────────────
     with st.expander("🔵 Round of 32", expanded=True):
-        _cards = ""
-        _m = 1
-        # M1-M8: Group A-H winners vs best-3rd (show most likely 3rd from remaining groups)
-        for i in range(8):
-            _w_team, _w_p = _expected_group_pos(_grp_order[i], 1)
-            # Approximate best 3rd: team from groups I-L with highest qualified-but-not-top2
-            _thirds = []
-            for _g in _grp_order[8:]:
-                for _t in GROUPS[_g]:
-                    _q = live_sim["qualified"].get(_t, 0)
-                    _gw = live_sim["group_win"].get(_t, 0)
-                    _thirds.append((_t, max(0, _q - _gw) * 0.6))  # rough P(3rd and qualifies)
-            _thirds.sort(key=lambda x: x[1], reverse=True)
-            _t3_team, _t3_p = _thirds[i % len(_thirds)] if _thirds else ("TBD", 0.0)
-            _cards += _match_card(_w_team, _w_p, _t3_team, _t3_p, _m, "R32")
-            _m += 1
-        # M9-M12: Group I-L winners vs Group A-D runners-up
-        for i in range(4):
-            _w_team, _w_p = _expected_group_pos(_grp_order[8 + i], 1)
-            _r_team, _r_p = _expected_group_pos(_grp_order[i], 2)
-            _cards += _match_card(_w_team, _w_p, _r_team, _r_p, _m, "R32")
-            _m += 1
-        # M13-M16: Group I-L runners-up vs Group E-H runners-up
-        for i in range(4):
-            _r1_team, _r1_p = _expected_group_pos(_grp_order[8 + i], 2)
-            _r2_team, _r2_p = _expected_group_pos(_grp_order[4 + i], 2)
-            _cards += _match_card(_r1_team, _r1_p, _r2_team, _r2_p, _m, "R32")
-            _m += 1
+        _cards = "".join(
+            _match_card(ta, live_sim["qualified"].get(ta, 0),
+                        tb, live_sim["qualified"].get(tb, 0), i + 1, "R32")
+            for i, (ta, tb) in enumerate(_r32_pairs)
+        )
         st.markdown(_cards, unsafe_allow_html=True)
 
     # ── R16 ────────────────────────────────────────────────────────────────────
     with st.expander("🟡 Round of 16"):
-        st.caption("Projected based on likely R32 outcomes.")
-        _r16_teams = sorted(ALL_TEAMS, key=lambda t: live_sim["r16"].get(t, 0), reverse=True)[:16]
-        _r16_cards = ""
-        for i in range(0, 16, 2):
-            _ta, _tb = _r16_teams[i], _r16_teams[i+1]
-            _pa = live_sim["r16"].get(_ta, 0)
-            _pb = live_sim["r16"].get(_tb, 0)
-            _r16_cards += _match_card(_ta, _pa, _tb, _pb, i//2 + 1, "R16")
-        st.markdown(_r16_cards, unsafe_allow_html=True)
+        st.caption("Projected winners from R32 advance into these matchups.")
+        _cards = "".join(
+            _match_card(ta, live_sim["r16"].get(ta, 0),
+                        tb, live_sim["r16"].get(tb, 0), i + 1, "R16")
+            for i, (ta, tb) in enumerate(_r16_pairs)
+        )
+        st.markdown(_cards, unsafe_allow_html=True)
 
     # ── QF ─────────────────────────────────────────────────────────────────────
     with st.expander("🟠 Quarter-Finals"):
-        _qf_teams = sorted(ALL_TEAMS, key=lambda t: live_sim["quarter"].get(t, 0), reverse=True)[:8]
-        _qf_cards = ""
-        for i in range(0, 8, 2):
-            _ta, _tb = _qf_teams[i], _qf_teams[i+1]
-            _pa = live_sim["quarter"].get(_ta, 0)
-            _pb = live_sim["quarter"].get(_tb, 0)
-            _qf_cards += _match_card(_ta, _pa, _tb, _pb, i//2 + 1, "QF")
-        st.markdown(_qf_cards, unsafe_allow_html=True)
+        _cards = "".join(
+            _match_card(ta, live_sim["quarter"].get(ta, 0),
+                        tb, live_sim["quarter"].get(tb, 0), i + 1, "QF")
+            for i, (ta, tb) in enumerate(_qf_pairs)
+        )
+        st.markdown(_cards, unsafe_allow_html=True)
 
     # ── SF ─────────────────────────────────────────────────────────────────────
     with st.expander("🔴 Semi-Finals"):
-        _sf_teams = sorted(ALL_TEAMS, key=lambda t: live_sim["semi"].get(t, 0), reverse=True)[:4]
-        _sf_cards = ""
-        for i in range(0, 4, 2):
-            _ta, _tb = _sf_teams[i], _sf_teams[i+1]
-            _pa = live_sim["semi"].get(_ta, 0)
-            _pb = live_sim["semi"].get(_tb, 0)
-            _sf_cards += _match_card(_ta, _pa, _tb, _pb, i//2 + 1, "SF")
-        st.markdown(_sf_cards, unsafe_allow_html=True)
+        _cards = "".join(
+            _match_card(ta, live_sim["semi"].get(ta, 0),
+                        tb, live_sim["semi"].get(tb, 0), i + 1, "SF")
+            for i, (ta, tb) in enumerate(_sf_pairs)
+        )
+        st.markdown(_cards, unsafe_allow_html=True)
 
     # ── Final ──────────────────────────────────────────────────────────────────
     with st.expander("🏆 Final", expanded=True):
-        _fin_teams = sorted(ALL_TEAMS, key=lambda t: live_sim["finalist"].get(t, 0), reverse=True)[:2]
-        _ta, _tb = _fin_teams[0], _fin_teams[1]
-        _pa = live_sim["finalist"].get(_ta, 0)
-        _pb = live_sim["finalist"].get(_tb, 0)
-        st.markdown(_match_card(_ta, _pa, _tb, _pb, 1, "Final"), unsafe_allow_html=True)
+        _ta, _tb = _final_pair
+        st.markdown(
+            _match_card(_ta, live_sim["finalist"].get(_ta, 0),
+                        _tb, live_sim["finalist"].get(_tb, 0), 1, "Final"),
+            unsafe_allow_html=True,
+        )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — Head-to-Head
