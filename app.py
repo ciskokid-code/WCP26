@@ -18,12 +18,10 @@ from src.live_model import (
     apply_results_to_elo,
     build_known_group_results,
     get_group_standings,
-    get_unplayed_fixtures,
     load_saved_results,
 )
 from src.predictions import predict_match, run_group_simulation, run_simulation
 from src.precompute import load_cache
-from src.schedule import get_group_fixtures, get_schedule
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
@@ -326,101 +324,17 @@ with tab2:
 
 with tab3:
     _live_results = _live_results_global
-    _schedule     = get_schedule()
-    _unplayed     = get_unplayed_fixtures(_schedule, _live_results)
 
     st.markdown(
         '<p style="color:#ff6b35;font-size:12px;font-weight:700;letter-spacing:2px;'
-        'text-transform:uppercase;margin-bottom:2px;">Live Updates</p>',
+        'text-transform:uppercase;margin-bottom:2px;">Projected Bracket</p>',
         unsafe_allow_html=True,
     )
     st.title("Match Predictor")
-    st.caption("Predictions for every match across all stages of the tournament.")
+    st.caption("Visual bracket showing projected matchups and chances at every stage.")
 
-    # ── Group stage matches ────────────────────────────────────────────────────
-    st.markdown("### Group stage matches")
-    _grp_tabs = st.tabs([f"Group {g}" for g in GROUPS])
-
-    for _tab, _grp in zip(_grp_tabs, GROUPS):
-        with _tab:
-            _grp_teams    = GROUPS[_grp]
-            _grp_fixtures = get_group_fixtures(_grp)
-            _grp_standings = get_group_standings(_grp, _live_results, _grp_teams)
-            _played_keys  = {
-                (r["home"], r["away"]): r
-                for r in _live_results if r["group"] == _grp
-            }
-
-            # Standings table
-            if any(r["group"] == _grp for r in _live_results):
-                _st_rows = []
-                for _pos, _row in enumerate(_grp_standings, 1):
-                    _st_rows.append({
-                        "#": f"{_pos}{'✓' if _pos <= 2 else ''}",
-                        "Team": f"{flag(_row['team'])} {_row['team']}",
-                        "P": _row["played"], "W": _row["won"],
-                        "D": _row["drawn"],  "L": _row["lost"],
-                        "GD": _row["gd"],    "Pts": _row["pts"],
-                    })
-                st.dataframe(pd.DataFrame(_st_rows), use_container_width=True, hide_index=True)
-            else:
-                st.caption("No results yet.")
-
-            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-
-            # Match cards
-            for _fix in _grp_fixtures:
-                _home, _away = _fix["home"], _fix["away"]
-                _md, _date   = _fix["matchday"], _fix["date"]
-
-                if (_home, _away) in _played_keys:
-                    _res = _played_keys[(_home, _away)]
-                    _hs, _as = _res["home_score"], _res["away_score"]
-                    st.markdown(f"""
-                    <div style="background:#1a2a1a;border:1px solid #2a3a2a;
-                                border-radius:10px;padding:12px 16px;margin-bottom:6px;">
-                        <div style="font-size:10px;color:#555;text-align:center;
-                                    margin-bottom:4px;">MD{_md} · {_date} ✓</div>
-                        <div style="display:flex;align-items:center;justify-content:space-between;">
-                            <div style="font-size:13px;color:#ccc;flex:1;">{flag(_home)} {_home}</div>
-                            <div style="font-size:22px;font-weight:800;color:#e8e8e8;
-                                        padding:0 12px;flex-shrink:0;">{_hs}–{_as}</div>
-                            <div style="font-size:13px;color:#ccc;flex:1;text-align:right;">{_away} {flag(_away)}</div>
-                        </div>
-                    </div>""", unsafe_allow_html=True)
-                else:
-                    _pred = predict_match(live_elos.get(_home, 1500), live_elos.get(_away, 1500))
-                    _w = _pred["win"] * 100
-                    _d = _pred["draw"] * 100
-                    _l = _pred["loss"] * 100
-                    st.markdown(f"""
-                    <div style="background:#1e1e2e;border:1px solid #2a2a3a;
-                                border-radius:10px;padding:12px 16px;margin-bottom:6px;">
-                        <div style="font-size:10px;color:#555;text-align:center;
-                                    margin-bottom:4px;">MD{_md} · {_date}</div>
-                        <div style="display:flex;align-items:center;justify-content:space-between;">
-                            <div style="font-size:13px;color:#ccc;flex:1;">{flag(_home)} {_home}</div>
-                            <div style="text-align:center;flex-shrink:0;padding:0 8px;">
-                                <div style="font-size:13px;font-weight:700;color:#ff6b35;">
-                                    {_w:.0f}% / {_d:.0f}% / {_l:.0f}%
-                                </div>
-                                <div style="font-size:9px;color:#555;">Win / Draw / Win</div>
-                            </div>
-                            <div style="font-size:13px;color:#ccc;flex:1;text-align:right;">{_away} {flag(_away)}</div>
-                        </div>
-                    </div>""", unsafe_allow_html=True)
-
-    # ── Knockout bracket ───────────────────────────────────────────────────────
-    st.divider()
-    st.markdown("### Knockout bracket")
-    st.caption(
-        "Each bracket section shows one team's projected path R32 → R16 → QF. "
-        "Teams only meet outside their section in the SF or Final."
-    )
-
+    # ── Bracket helpers ────────────────────────────────────────────────────────
     _grp_order = list(GROUPS.keys())
-
-    # ── helpers ────────────────────────────────────────────────────────────────
 
     def _proj_winner(ta: str, tb: str) -> str:
         pred = predict_match(live_elos.get(ta, 1500), live_elos.get(tb, 1500))
@@ -430,185 +344,155 @@ with tab3:
         return [(_proj_winner(*pairs[i]), _proj_winner(*pairs[i + 1]))
                 for i in range(0, len(pairs), 2)]
 
-    def _win_pct(ta: str, tb: str) -> str:
-        pred = predict_match(live_elos.get(ta, 1500), live_elos.get(tb, 1500))
-        w = pred["win"] * 100
-        d = pred["draw"] * 100
-        l = pred["loss"] * 100
-        return f"{w:.0f}% / {d:.0f}% / {l:.0f}%"
+    _CW = "148px"   # card width
+    _GW = "20px"    # connector/gap width
 
-    def _row(ta: str, tb: str, rnd: str, winner: str) -> str:
-        """Single match row: Team A vs Team B with round label and W/D/L."""
+    def _bcard(ta: str, tb: str) -> str:
+        """Bracket match card: winner in orange on top, loser below."""
+        w = _proj_winner(ta, tb)
+        l = tb if w == ta else ta
         pred = predict_match(live_elos.get(ta, 1500), live_elos.get(tb, 1500))
-        w, d, l = pred["win"]*100, pred["draw"]*100, pred["loss"]*100
-        # Highlight projected winner in orange
-        col_a = "#ff6b35" if winner == ta else "#ccc"
-        col_b = "#ff6b35" if winner == tb else "#ccc"
-        return f"""
-        <div style="display:flex;align-items:center;gap:6px;padding:9px 12px;
-                    background:#1e1e2e;border-radius:8px;margin-bottom:5px;
-                    border:1px solid #2a2a3a;">
-            <div style="font-size:9px;color:#555;width:28px;flex-shrink:0;text-align:center;
-                        line-height:1.2;">{rnd}</div>
-            <div style="flex:1;font-size:13px;font-weight:600;color:{col_a};min-width:0;
-                        overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-                {flag(ta)} {ta}
-            </div>
-            <div style="font-size:11px;color:#ff6b35;font-weight:700;
-                        flex-shrink:0;text-align:center;min-width:80px;">
-                {w:.0f}% / {d:.0f}% / {l:.0f}%
-            </div>
-            <div style="flex:1;font-size:13px;font-weight:600;color:{col_b};min-width:0;
-                        overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-                        text-align:right;">
-                {tb} {flag(tb)}
-            </div>
-        </div>"""
+        pct = int(max(pred["win"], pred["loss"]) * 100)
+        return (
+            f'<div style="background:#161625;border:1px solid #2a2a3a;border-radius:6px;'
+            f'width:{_CW};overflow:hidden;box-sizing:border-box;flex-shrink:0;">'
+            f'<div style="padding:5px 7px;border-bottom:1px solid #2a2a3a;'
+            f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
+            f'<span style="font-size:12px;">{flag(w)}</span>'
+            f'<span style="font-size:11px;font-weight:700;color:#ff6b35;"> {w[:15]}</span>'
+            f'</div>'
+            f'<div style="padding:5px 7px;border-bottom:1px solid #2a2a3a;'
+            f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
+            f'<span style="font-size:12px;">{flag(l)}</span>'
+            f'<span style="font-size:11px;color:#484860;"> {l[:15]}</span>'
+            f'</div>'
+            f'<div style="padding:2px 7px;font-size:9px;color:#ff6b35;">{pct}% advance</div>'
+            f'</div>'
+        )
 
-    # ── Build R32 bracket (16 ordered pairs) ───────────────────────────────────
-    # Best-3rd candidates: teams most likely to qualify without winning their group
-    _p2_score = {
-        t: max(0.0, live_sim["qualified"].get(t, 0) - live_sim["group_win"].get(t, 0))
-        for t in ALL_TEAMS
-    }
-    # Only teams unlikely to win their group qualify as 3rd
-    _thirds_sorted = sorted(
+    def _conn(n: int) -> str:
+        """n L-shaped connectors stacked — links n pairs of cards to next round."""
+        pairs = "".join(
+            '<div style="flex:1;display:flex;flex-direction:column;">'
+            '<div style="flex:1;border-right:2px solid #2d2d4a;border-bottom:2px solid #2d2d4a;border-radius:0 0 4px 0;"></div>'
+            '<div style="flex:1;border-right:2px solid #2d2d4a;border-top:2px solid #2d2d4a;border-radius:0 4px 0 0;"></div>'
+            '</div>'
+            for _ in range(n)
+        )
+        return f'<div style="width:{_GW};display:flex;flex-direction:column;align-self:stretch;flex-shrink:0;">{pairs}</div>'
+
+    def _rcol(matches, center=False) -> str:
+        jc = "center" if center else "space-around"
+        cards = "".join(_bcard(a, b) for a, b in matches)
+        return (
+            f'<div style="display:flex;flex-direction:column;justify-content:{jc};'
+            f'align-self:stretch;gap:4px;flex-shrink:0;width:{_CW};">{cards}</div>'
+        )
+
+    def _half(r32m, r16m, qfm, sfm, height="640px") -> str:
+        """One bracket half: 8 R32 → 4 R16 → 2 QF → 1 SF."""
+        lbl = (
+            f'<div style="display:flex;gap:0;padding-bottom:4px;">'
+            + "".join(
+                f'<div style="width:{_CW};text-align:center;font-size:9px;color:#ff6b35;'
+                f'font-weight:700;letter-spacing:1px;flex-shrink:0;">{r}</div>'
+                f'<div style="width:{_GW};flex-shrink:0;"></div>'
+                for r in ["R32", "R16", "QF", "SF"]
+            )
+            + "</div>"
+        )
+        body = (
+            f'<div style="display:flex;align-items:stretch;gap:0;min-height:{height};">'
+            f'{_rcol(r32m)}{_conn(4)}{_rcol(r16m)}{_conn(2)}{_rcol(qfm)}{_conn(1)}{_rcol([sfm], center=True)}'
+            f'</div>'
+        )
+        return lbl + body
+
+    # ── Build R32 bracket ──────────────────────────────────────────────────────
+    # Best 3rd candidates: highest P(qualify) teams that aren't group favourites
+    _p2 = {t: max(0.0, live_sim["qualified"].get(t, 0) - live_sim["group_win"].get(t, 0))
+           for t in ALL_TEAMS}
+    _t3_pool = sorted(
         [t for t in ALL_TEAMS if live_sim["group_win"].get(t, 1) < 0.50],
-        key=lambda t: _p2_score[t], reverse=True
+        key=lambda t: _p2[t], reverse=True,
     )
-    # Pick top 8, one per group if possible
-    _best_thirds: list[str] = []
-    _seen_grp: set[str] = set()
-    for _t in _thirds_sorted:
+    _seen_g3: set = set()
+    _best3: list = []
+    for _t in _t3_pool:
         _tg = next(g for g, ts in GROUPS.items() if _t in ts)
-        if _tg not in _seen_grp:
-            _seen_grp.add(_tg)
-            _best_thirds.append(_t)
-        if len(_best_thirds) == 8:
+        if _tg not in _seen_g3:
+            _seen_g3.add(_tg)
+            _best3.append(_t)
+        if len(_best3) == 8:
             break
-    # Pad with strongest remaining if needed
-    for _t in _thirds_sorted:
-        if _t not in _best_thirds and len(_best_thirds) < 8:
-            _best_thirds.append(_t)
+    while len(_best3) < 8:
+        _best3.append("TBD")
 
     _r32: list[tuple[str, str]] = []
-    for i in range(8):                         # M1-M8: Grp A-H winners vs best-3rds
+    for i in range(8):
         _w, _ = _expected_group_pos(_grp_order[i], 1)
-        _t3   = _best_thirds[7 - i] if i < len(_best_thirds) else "TBD"
-        _r32.append((_w, _t3))
-    for i in range(4):                         # M9-M12: Grp I-L winners vs Grp A-D RU
+        _r32.append((_w, _best3[7 - i]))
+    for i in range(4):
         _w, _ = _expected_group_pos(_grp_order[8 + i], 1)
         _r, _ = _expected_group_pos(_grp_order[i], 2)
         _r32.append((_w, _r))
-    for i in range(4):                         # M13-M16: Grp I-L RU vs Grp E-H RU
+    for i in range(4):
         _r1, _ = _expected_group_pos(_grp_order[8 + i], 2)
         _r2, _ = _expected_group_pos(_grp_order[4 + i], 2)
         _r32.append((_r1, _r2))
 
-    # Propagate full bracket
     _r16 = _advance(_r32)
     _qf  = _advance(_r16)
     _sf  = _advance(_qf)
     _fin = _advance(_sf)[0]
 
-    # ── 4 bracket sections: each covers 4 R32 → 2 R16 → 1 QF ─────────────────
-    # Section indices into _r32 / _r16 / _qf
-    # Sec A: R32[0-3] → R16[0-1] → QF[0]
-    # Sec B: R32[4-7] → R16[2-3] → QF[1]   (SF-1: QF[0] vs QF[1])
-    # Sec C: R32[8-11] → R16[4-5] → QF[2]
-    # Sec D: R32[12-15] → R16[6-7] → QF[3]  (SF-2: QF[2] vs QF[3])
-
-    _sections = [
-        ("A", _r32[0:4],  _r16[0:2], _qf[0]),
-        ("B", _r32[4:8],  _r16[2:4], _qf[1]),
-        ("C", _r32[8:12], _r16[4:6], _qf[2]),
-        ("D", _r32[12:16],_r16[6:8], _qf[3]),
-    ]
-    _sf_labels = ["Section A/B winner", "Section C/D winner"]
-
-    for _sec_id, _r32s, _r16s, _qfm in _sections:
-        _qf_w = _proj_winner(*_qfm)
-        _sec_title = f"Bracket Section {_sec_id}  —  QF favourite: {flag(_qf_w)} {_qf_w}"
-        with st.expander(_sec_title, expanded=(_sec_id == "A")):
-            _html = ""
-            _html += '<div style="font-size:10px;color:#ff6b35;font-weight:700;letter-spacing:1px;margin-bottom:6px;">ROUND OF 32</div>'
-            for _m in _r32s:
-                _html += _row(_m[0], _m[1], "R32", _proj_winner(*_m))
-            _html += '<div style="font-size:10px;color:#ff6b35;font-weight:700;letter-spacing:1px;margin:10px 0 6px;">ROUND OF 16</div>'
-            for _m in _r16s:
-                _html += _row(_m[0], _m[1], "R16", _proj_winner(*_m))
-            _html += '<div style="font-size:10px;color:#ff6b35;font-weight:700;letter-spacing:1px;margin:10px 0 6px;">QUARTER-FINAL</div>'
-            _html += _row(_qfm[0], _qfm[1], "QF", _qf_w)
-            st.markdown(_html, unsafe_allow_html=True)
-
-    # ── Semi-Finals ────────────────────────────────────────────────────────────
-    st.markdown("#### Semi-Finals")
-    _sf_html = ""
-    for i, _m in enumerate(_sf):
-        _sf_html += _row(_m[0], _m[1], "SF", _proj_winner(*_m))
-    st.markdown(_sf_html, unsafe_allow_html=True)
-
-    # ── Final ──────────────────────────────────────────────────────────────────
-    st.markdown("#### 🏆 Final")
+    # ── Render bracket ─────────────────────────────────────────────────────────
     _champ = _proj_winner(*_fin)
-    _final_html = _row(_fin[0], _fin[1], "Final", _champ)
-    _final_html += f"""
-    <div style="text-align:center;margin-top:12px;padding:14px;background:#1e1e2e;
-                border-radius:12px;border:1px solid #ff6b35;">
-        <div style="font-size:11px;color:#888;margin-bottom:4px;">Projected Champion</div>
-        <div style="font-size:28px;font-weight:800;color:#ff6b35;">
-            {flag(_champ)} {_champ}
-        </div>
-        <div style="font-size:13px;color:#888;margin-top:4px;">
-            {live_sim['champion'].get(_champ, 0)*100:.1f}% pre-tournament title probability
-        </div>
-    </div>"""
-    st.markdown(_final_html, unsafe_allow_html=True)
 
-    # ── Team path selector ────────────────────────────────────────────────────
-    st.divider()
-    st.markdown("#### Any team's projected path")
-    _path_team = st.selectbox("Select team", sorted(ALL_TEAMS),
-                              format_func=lambda t: f"{flag(t)} {t}", key="path_sel")
+    _final_card = (
+        f'<div style="text-align:center;padding:16px 20px;background:#1a1a2e;'
+        f'border-radius:12px;border:2px solid #ff6b35;margin:16px 0;">'
+        f'<div style="font-size:10px;color:#888;letter-spacing:2px;margin-bottom:10px;">🏆 PROJECTED FINAL</div>'
+        f'<div style="display:flex;justify-content:center;gap:12px;align-items:center;flex-wrap:wrap;">'
+        f'<div style="text-align:center;">'
+        f'<div style="font-size:36px;">{flag(_fin[0])}</div>'
+        f'<div style="font-size:14px;font-weight:700;color:#ff6b35;">{_fin[0]}</div>'
+        f'<div style="font-size:11px;color:#888;">{live_sim["finalist"].get(_fin[0],0)*100:.0f}% to reach final</div>'
+        f'</div>'
+        f'<div style="font-size:18px;color:#555;font-weight:700;">vs</div>'
+        f'<div style="text-align:center;">'
+        f'<div style="font-size:36px;">{flag(_fin[1])}</div>'
+        f'<div style="font-size:14px;font-weight:700;color:#ccc;">{_fin[1]}</div>'
+        f'<div style="font-size:11px;color:#888;">{live_sim["finalist"].get(_fin[1],0)*100:.0f}% to reach final</div>'
+        f'</div>'
+        f'</div>'
+        f'<div style="margin-top:12px;font-size:22px;font-weight:800;color:#ff6b35;">'
+        f'Projected champion: {flag(_champ)} {_champ}'
+        f'</div>'
+        f'<div style="font-size:12px;color:#888;margin-top:2px;">'
+        f'{live_sim["champion"].get(_champ,0)*100:.1f}% title probability'
+        f'</div>'
+        f'</div>'
+    )
 
-    # Find this team's R32 match and trace its path
-    _path_r32 = next(((a, b) for a, b in _r32 if a == _path_team or b == _path_team), None)
-    # Trace this team's projected path round by round
-    _stage_names = ["R32", "R16", "QF", "SF", "Final"]
-    _all_rounds  = [_r32, _r16, _qf, _sf, [_fin]]
-    _cur_team    = _path_team
-    _path_html   = ""
-    for _sname, _round in zip(_stage_names, _all_rounds):
-        _match = next(((a, b) for a, b in _round if a == _cur_team or b == _cur_team), None)
-        if _match is None:
-            break
-        _opp  = _match[1] if _match[0] == _cur_team else _match[0]
-        _pred = predict_match(live_elos.get(_cur_team, 1500), live_elos.get(_opp, 1500))
-        _w    = _pred["win"] * 100
-        _d    = _pred["draw"] * 100
-        _l    = _pred["loss"] * 100
-        _winner_here = _proj_winner(*_match)
-        _col_t = "#ff6b35" if _winner_here == _cur_team else "#ccc"
-        _path_html += f"""
-        <div style="display:flex;align-items:center;gap:8px;padding:9px 12px;
-                    background:#1e1e2e;border-radius:8px;margin-bottom:5px;
-                    border:1px solid #2a2a3a;">
-            <div style="font-size:9px;color:#555;width:34px;flex-shrink:0;text-align:center;">{_sname}</div>
-            <div style="font-size:13px;font-weight:600;color:{_col_t};flex:1;min-width:0;
-                        overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-                vs {flag(_opp)} {_opp}
-            </div>
-            <div style="font-size:11px;color:#ff6b35;font-weight:700;flex-shrink:0;">
-                {_w:.0f}% / {_d:.0f}% / {_l:.0f}%
-            </div>
-        </div>"""
-        if _winner_here != _cur_team:
-            _path_html += '<div style="font-size:11px;color:#e74c3c;padding:4px 12px;">Eliminated here</div>'
-            break
-        _cur_team = _winner_here
+    _full_bracket = (
+        f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;">'
+        f'<div style="min-width:680px;">'
+        f'<div style="font-size:11px;color:#888;font-weight:600;margin-bottom:4px;">TOP HALF</div>'
+        f'{_half(_r32[0:8], _r16[0:4], _qf[0:2], _sf[0])}'
+        f'{_final_card}'
+        f'<div style="font-size:11px;color:#888;font-weight:600;margin:4px 0 4px;">BOTTOM HALF</div>'
+        f'{_half(_r32[8:16], _r16[4:8], _qf[2:4], _sf[1])}'
+        f'</div>'
+        f'</div>'
+    )
 
-    st.markdown(_path_html, unsafe_allow_html=True)
-    st.caption(f"Championship probability: {live_sim['champion'].get(_path_team, 0)*100:.1f}%")
+    st.markdown(_full_bracket, unsafe_allow_html=True)
+
+    st.caption(
+        "Bracket built from Elo-based group qualification simulation. "
+        "Winner of each match advances. Scroll right on mobile."
+    )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — Head-to-Head
