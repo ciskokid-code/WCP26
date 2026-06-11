@@ -176,6 +176,42 @@ group_probs_all = payload["group_probs"]
 if "results_2026" not in st.session_state:
     st.session_state["results_2026"] = load_saved_results()
 
+# ── Live simulation — reacts to entered results ───────────────────────────────
+
+_live_results_global = st.session_state["results_2026"]
+_live_hash = hash(tuple(
+    (r["home"], r["away"], r["home_score"], r["away_score"])
+    for r in sorted(_live_results_global, key=lambda x: (x["date"], x["home"]))
+))
+
+
+@st.cache_data(show_spinner="Updating odds…")
+def _compute_live_sim(_h: int, _res: list, _base_elos: dict) -> dict:
+    _known = build_known_group_results(_res)
+    _elos  = apply_results_to_elo(_base_elos, _res)
+    return run_simulation(_elos, n_sims=20_000, seed=42, known_group_results=_known)
+
+
+live_sim  = _compute_live_sim(_live_hash, _live_results_global, elos)
+live_elos = apply_results_to_elo(elos, _live_results_global)
+
+
+def _expected_group_pos(group: str, pos: int) -> tuple[str, float]:
+    """Most likely team for position 1 (winner) or 2 (runner-up) in a group."""
+    teams = GROUPS[group]
+    standings = get_group_standings(group, _live_results_global, teams)
+    fully_played = all(row["played"] == 3 for row in standings)
+    if fully_played:
+        return standings[pos - 1]["team"], 1.0
+    if pos == 1:
+        probs = [(t, live_sim["group_win"].get(t, 0)) for t in teams]
+    else:
+        probs = [(t, max(0.0, live_sim["qualified"].get(t, 0)
+                        - live_sim["group_win"].get(t, 0))) for t in teams]
+    probs.sort(key=lambda x: x[1], reverse=True)
+    return probs[0][0], probs[0][1]
+
+
 # ── Navigation tabs ───────────────────────────────────────────────────────────
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -192,7 +228,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 
 with tab1:
     team_group = {t: g for g, teams in GROUPS.items() for t in teams}
-    champ  = sim["champion"]
+    champ  = live_sim["champion"]   # updates automatically as results are entered
     ranked = sorted(ALL_TEAMS, key=lambda t: champ.get(t, 0), reverse=True)
 
     st.markdown(
@@ -315,7 +351,7 @@ with tab2:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab3:
-    _live_results = st.session_state["results_2026"]
+    _live_results = _live_results_global
     _schedule     = get_schedule()
     _unplayed     = get_unplayed_fixtures(_schedule, _live_results)
 
@@ -325,12 +361,12 @@ with tab3:
         unsafe_allow_html=True,
     )
     st.title("Match Predictor")
-    st.caption("Enter scores below — championship odds update automatically.")
+    st.caption("Predictions for every match. Enter scores to update championship odds in real time.")
 
-    # ── Result entry form (inline, mobile-friendly) ───────────────────────────
-    with st.expander("➕ Enter a result", expanded=bool(_unplayed)):
+    # ── Result entry (group stage) ────────────────────────────────────────────
+    with st.expander("➕ Enter a group-stage result", expanded=bool(_unplayed)):
         if not _unplayed:
-            st.info("All group-stage fixtures have been recorded.")
+            st.success("All group-stage fixtures recorded.")
         else:
             def _fmt_fix(f: dict) -> str:
                 return f"Group {f['group']} MD{f['matchday']} · {f['home']} vs {f['away']}"
@@ -355,12 +391,33 @@ with tab3:
                 st.cache_data.clear()
                 st.rerun()
 
-    # Recorded results list with ❌ remove
+    # ── Knockout result entry ─────────────────────────────────────────────────
+    with st.expander("➕ Enter a knockout result"):
+        _ko_rounds = ["R32", "R16", "QF", "SF", "Final"]
+        _ko_col1, _ko_col2, _ko_col3 = st.columns([2, 2, 1])
+        _ko_home = _ko_col1.selectbox("Home", sorted(ALL_TEAMS),
+                                       format_func=lambda t: f"{flag(t)} {t}", key="ko_home")
+        _ko_away = _ko_col2.selectbox("Away", sorted(ALL_TEAMS), index=1,
+                                       format_func=lambda t: f"{flag(t)} {t}", key="ko_away")
+        _ko_round = _ko_col3.selectbox("Round", _ko_rounds, key="ko_round")
+        _ko_c1, _ko_c2 = st.columns(2)
+        _ko_hs = _ko_c1.number_input(f"Goals: {_ko_home[:12]}", 0, 20, 0, key="ko_hs")
+        _ko_as = _ko_c2.number_input(f"Goals: {_ko_away[:12]}", 0, 20, 0, key="ko_as")
+        if st.button("Record knockout result ✓", type="primary", use_container_width=True, key="ko_submit"):
+            if _ko_home != _ko_away:
+                st.session_state["results_2026"] = save_result(
+                    home=_ko_home, away=_ko_away,
+                    home_score=int(_ko_hs), away_score=int(_ko_as),
+                    group=_ko_round, date="2026-07-01",
+                    results=st.session_state["results_2026"],
+                )
+                st.cache_data.clear()
+                st.rerun()
+
+    # Recorded results with ❌ remove
     if _live_results:
-        st.markdown(
-            '<p style="font-size:12px;color:#888;margin:12px 0 4px;">Recorded results</p>',
-            unsafe_allow_html=True,
-        )
+        st.markdown('<p style="font-size:12px;color:#888;margin:12px 0 4px;">Recorded results</p>',
+                    unsafe_allow_html=True)
         for _r in sorted(_live_results, key=lambda x: x["date"]):
             _lbl = f"{flag(_r['home'])} {_r['home']} {_r['home_score']}–{_r['away_score']} {_r['away']} {flag(_r['away'])}"
             _rc1, _rc2 = st.columns([6, 1])
@@ -374,62 +431,7 @@ with tab3:
 
     st.divider()
 
-    # ── Live simulation ────────────────────────────────────────────────────────
-    _results_hash = hash(tuple(
-        (r["home"], r["away"], r["home_score"], r["away_score"])
-        for r in sorted(_live_results, key=lambda x: (x["date"], x["home"]))
-    ))
-
-    @st.cache_data(show_spinner="Updating odds…")
-    def _live_sim(_h: int, _res: list, _base_elos: dict) -> dict:
-        _known = build_known_group_results(_res)
-        _elos  = apply_results_to_elo(_base_elos, _res)
-        return run_simulation(_elos, n_sims=20_000, seed=42, known_group_results=_known)
-
-    _live_sim_result = _live_sim(_results_hash, _live_results, elos)
-    _updated_elos    = apply_results_to_elo(elos, _live_results)
-
-    # ── Updated championship odds — horizontal bars with delta ────────────────
-    _base_champ = sim["champion"]
-    _live_champ = _live_sim_result["champion"]
-    _ranked_live = sorted(ALL_TEAMS, key=lambda t: _live_champ.get(t, 0), reverse=True)
-    _max_live    = _live_champ.get(_ranked_live[0], 1)
-
-    st.markdown("### Championship odds — updated")
-
-    _bars_html = ""
-    for i, team in enumerate(_ranked_live[:20], 1):
-        p     = _live_champ.get(team, 0)
-        p_base = _base_champ.get(team, 0)
-        delta  = (p - p_base) * 100
-        bar_w  = (p / _max_live) * 100
-        d_col  = "#2ca02c" if delta > 0.05 else "#e74c3c" if delta < -0.05 else "#888"
-        d_str  = f"{delta:+.1f}pp" if abs(delta) > 0.05 else "—"
-        _bars_html += f"""
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;
-                    padding:10px 12px;background:#1e1e2e;border-radius:8px;
-                    border:1px solid #2a2a3a;">
-            <div style="width:20px;text-align:right;color:#555;font-size:12px;
-                        flex-shrink:0;">{i}</div>
-            <div style="font-size:20px;flex-shrink:0;">{flag(team)}</div>
-            <div style="flex:1;font-size:13px;font-weight:500;min-width:0;
-                        overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{team}</div>
-            <div style="width:70px;background:#2a2a2a;border-radius:4px;
-                        height:8px;flex-shrink:0;overflow:hidden;">
-                <div style="background:#ff6b35;width:{bar_w:.1f}%;height:8px;
-                            border-radius:4px;"></div>
-            </div>
-            <div style="width:40px;text-align:right;font-size:13px;font-weight:700;
-                        color:#ff6b35;flex-shrink:0;">{p * 100:.1f}%</div>
-            <div style="width:52px;text-align:right;font-size:11px;font-weight:600;
-                        color:{d_col};flex-shrink:0;">{d_str}</div>
-        </div>"""
-    st.markdown(_bars_html, unsafe_allow_html=True)
-    st.caption("pp = percentage points vs pre-tournament baseline")
-
-    st.divider()
-
-    # ── Group tabs ─────────────────────────────────────────────────────────────
+    # ── Group stage matches ────────────────────────────────────────────────────
     st.markdown("### Group stage matches")
     _grp_tabs = st.tabs([f"Group {g}" for g in GROUPS])
 
@@ -481,7 +483,7 @@ with tab3:
                         </div>
                     </div>""", unsafe_allow_html=True)
                 else:
-                    _pred = predict_match(_updated_elos.get(_home, 1500), _updated_elos.get(_away, 1500))
+                    _pred = predict_match(live_elos.get(_home, 1500), live_elos.get(_away, 1500))
                     _w = _pred["win"] * 100
                     _d = _pred["draw"] * 100
                     _l = _pred["loss"] * 100
@@ -501,6 +503,134 @@ with tab3:
                             <div style="font-size:13px;color:#ccc;flex:1;text-align:right;">{_away} {flag(_away)}</div>
                         </div>
                     </div>""", unsafe_allow_html=True)
+
+    # ── Knockout stage predictions ─────────────────────────────────────────────
+    st.divider()
+    st.markdown("### Knockout stage predictions")
+    st.caption("Teams shown are the most likely qualifiers based on current standings + simulation.")
+
+    # Build the R32 bracket from expected group positions
+    _grp_order = list(GROUPS.keys())  # A … L
+
+    def _match_card(team_a, prob_a, team_b, prob_b, match_no, round_name):
+        """Render one knockout match prediction card."""
+        _ko_results = {(r["home"], r["away"]): r for r in _live_results
+                       if r.get("group") in ("R32","R16","QF","SF","Final")}
+        _ko_results.update({(r["away"], r["home"]): r for r in _live_results
+                            if r.get("group") in ("R32","R16","QF","SF","Final")})
+
+        played = (team_a, team_b) in _ko_results or (team_b, team_a) in _ko_results
+        if played:
+            _res = _ko_results.get((team_a, team_b)) or _ko_results.get((team_b, team_a))
+            _hs = _res["home_score"] if _res["home"] == team_a else _res["away_score"]
+            _as = _res["away_score"] if _res["home"] == team_a else _res["home_score"]
+            bg = "#1a2a1a"
+            score_html = f'<div style="font-size:20px;font-weight:800;color:#e8e8e8;">✓ {_hs}–{_as}</div>'
+        else:
+            bg = "#1e1e2e"
+            _pred = predict_match(live_elos.get(team_a, 1500), live_elos.get(team_b, 1500))
+            _w, _d, _l = _pred["win"]*100, _pred["draw"]*100, _pred["loss"]*100
+            score_html = (
+                f'<div style="font-size:13px;font-weight:700;color:#ff6b35;">'
+                f'{_w:.0f}% / {_d:.0f}% / {_l:.0f}%</div>'
+                f'<div style="font-size:9px;color:#555;">Win / Draw / Win</div>'
+            )
+
+        p_a_str = f'<span style="font-size:10px;color:#888;"> ({prob_a*100:.0f}%)</span>' if prob_a < 0.99 else ""
+        p_b_str = f'<span style="font-size:10px;color:#888;"> ({prob_b*100:.0f}%)</span>' if prob_b < 0.99 else ""
+
+        return f"""
+        <div style="background:{bg};border:1px solid #2a2a3a;border-radius:10px;
+                    padding:10px 14px;margin-bottom:6px;">
+            <div style="font-size:9px;color:#555;text-align:center;margin-bottom:4px;">
+                {round_name} · Match {match_no}
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+                <div style="flex:1;font-size:13px;color:#ccc;">
+                    {flag(team_a)} {team_a}{p_a_str}
+                </div>
+                <div style="text-align:center;flex-shrink:0;padding:0 8px;">
+                    {score_html}
+                </div>
+                <div style="flex:1;font-size:13px;color:#ccc;text-align:right;">
+                    {team_b}{p_b_str} {flag(team_b)}
+                </div>
+            </div>
+        </div>"""
+
+    # ── R32 ────────────────────────────────────────────────────────────────────
+    with st.expander("🔵 Round of 32", expanded=True):
+        _cards = ""
+        _m = 1
+        # M1-M8: Group A-H winners vs best-3rd (show most likely 3rd from remaining groups)
+        for i in range(8):
+            _w_team, _w_p = _expected_group_pos(_grp_order[i], 1)
+            # Approximate best 3rd: team from groups I-L with highest qualified-but-not-top2
+            _thirds = []
+            for _g in _grp_order[8:]:
+                for _t in GROUPS[_g]:
+                    _q = live_sim["qualified"].get(_t, 0)
+                    _gw = live_sim["group_win"].get(_t, 0)
+                    _thirds.append((_t, max(0, _q - _gw) * 0.6))  # rough P(3rd and qualifies)
+            _thirds.sort(key=lambda x: x[1], reverse=True)
+            _t3_team, _t3_p = _thirds[i % len(_thirds)] if _thirds else ("TBD", 0.0)
+            _cards += _match_card(_w_team, _w_p, _t3_team, _t3_p, _m, "R32")
+            _m += 1
+        # M9-M12: Group I-L winners vs Group A-D runners-up
+        for i in range(4):
+            _w_team, _w_p = _expected_group_pos(_grp_order[8 + i], 1)
+            _r_team, _r_p = _expected_group_pos(_grp_order[i], 2)
+            _cards += _match_card(_w_team, _w_p, _r_team, _r_p, _m, "R32")
+            _m += 1
+        # M13-M16: Group I-L runners-up vs Group E-H runners-up
+        for i in range(4):
+            _r1_team, _r1_p = _expected_group_pos(_grp_order[8 + i], 2)
+            _r2_team, _r2_p = _expected_group_pos(_grp_order[4 + i], 2)
+            _cards += _match_card(_r1_team, _r1_p, _r2_team, _r2_p, _m, "R32")
+            _m += 1
+        st.markdown(_cards, unsafe_allow_html=True)
+
+    # ── R16 ────────────────────────────────────────────────────────────────────
+    with st.expander("🟡 Round of 16"):
+        st.caption("Projected based on likely R32 outcomes.")
+        _r16_teams = sorted(ALL_TEAMS, key=lambda t: live_sim["r16"].get(t, 0), reverse=True)[:16]
+        _r16_cards = ""
+        for i in range(0, 16, 2):
+            _ta, _tb = _r16_teams[i], _r16_teams[i+1]
+            _pa = live_sim["r16"].get(_ta, 0)
+            _pb = live_sim["r16"].get(_tb, 0)
+            _r16_cards += _match_card(_ta, _pa, _tb, _pb, i//2 + 1, "R16")
+        st.markdown(_r16_cards, unsafe_allow_html=True)
+
+    # ── QF ─────────────────────────────────────────────────────────────────────
+    with st.expander("🟠 Quarter-Finals"):
+        _qf_teams = sorted(ALL_TEAMS, key=lambda t: live_sim["quarter"].get(t, 0), reverse=True)[:8]
+        _qf_cards = ""
+        for i in range(0, 8, 2):
+            _ta, _tb = _qf_teams[i], _qf_teams[i+1]
+            _pa = live_sim["quarter"].get(_ta, 0)
+            _pb = live_sim["quarter"].get(_tb, 0)
+            _qf_cards += _match_card(_ta, _pa, _tb, _pb, i//2 + 1, "QF")
+        st.markdown(_qf_cards, unsafe_allow_html=True)
+
+    # ── SF ─────────────────────────────────────────────────────────────────────
+    with st.expander("🔴 Semi-Finals"):
+        _sf_teams = sorted(ALL_TEAMS, key=lambda t: live_sim["semi"].get(t, 0), reverse=True)[:4]
+        _sf_cards = ""
+        for i in range(0, 4, 2):
+            _ta, _tb = _sf_teams[i], _sf_teams[i+1]
+            _pa = live_sim["semi"].get(_ta, 0)
+            _pb = live_sim["semi"].get(_tb, 0)
+            _sf_cards += _match_card(_ta, _pa, _tb, _pb, i//2 + 1, "SF")
+        st.markdown(_sf_cards, unsafe_allow_html=True)
+
+    # ── Final ──────────────────────────────────────────────────────────────────
+    with st.expander("🏆 Final", expanded=True):
+        _fin_teams = sorted(ALL_TEAMS, key=lambda t: live_sim["finalist"].get(t, 0), reverse=True)[:2]
+        _ta, _tb = _fin_teams[0], _fin_teams[1]
+        _pa = live_sim["finalist"].get(_ta, 0)
+        _pb = live_sim["finalist"].get(_tb, 0)
+        st.markdown(_match_card(_ta, _pa, _tb, _pb, 1, "Final"), unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — Head-to-Head
