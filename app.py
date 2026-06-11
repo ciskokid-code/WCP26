@@ -183,14 +183,22 @@ _live_hash = hash(tuple(
 ))
 
 
-@st.cache_data(show_spinner="Updating odds…")
-def _compute_live_sim(_h: int, _res: list, _base_elos: dict) -> dict:
+@st.cache_resource
+def _compute_live_sim(_h: int) -> dict:
+    # When no results have been entered, reuse the pre-computed baseline (instant).
+    # Only re-run the simulation when actual match results are present.
+    _res = st.session_state.get("results_2026", [])
+    if not _res:
+        return payload   # baseline payload from disk cache — zero extra computation
     _known = build_known_group_results(_res)
-    _elos  = apply_results_to_elo(_base_elos, _res)
-    return run_simulation(_elos, n_sims=20_000, seed=42, known_group_results=_known)
+    _elos  = apply_results_to_elo(elos, _res)
+    _sim   = run_simulation(_elos, n_sims=20_000, seed=42, known_group_results=_known)
+    return {"simulation": _sim, "group_probs": payload["group_probs"],
+            "elos": _elos, "n_sims": 20_000}
 
 
-live_sim  = _compute_live_sim(_live_hash, _live_results_global, elos)
+_live_payload = _compute_live_sim(_live_hash)
+live_sim  = _live_payload["simulation"]
 live_elos = apply_results_to_elo(elos, _live_results_global)
 
 
