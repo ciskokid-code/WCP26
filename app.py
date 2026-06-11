@@ -20,8 +20,6 @@ from src.live_model import (
     get_group_standings,
     get_unplayed_fixtures,
     load_saved_results,
-    remove_result,
-    save_result,
 )
 from src.predictions import predict_match, run_group_simulation, run_simulation
 from src.precompute import load_cache
@@ -214,12 +212,11 @@ def _expected_group_pos(group: str, pos: int) -> tuple[str, float]:
 
 # ── Navigation tabs ───────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "🏆 Title Odds",
     "⚽ Groups",
     "📊 Match Predictor",
     "⚔️ H2H",
-    "🗺️ Path",
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -338,75 +335,7 @@ with tab3:
         unsafe_allow_html=True,
     )
     st.title("Match Predictor")
-    st.caption("Predictions for every match. Enter scores to update championship odds in real time.")
-
-    # ── Result entry (group stage) ────────────────────────────────────────────
-    with st.expander("➕ Enter a group-stage result", expanded=bool(_unplayed)):
-        if not _unplayed:
-            st.success("All group-stage fixtures recorded.")
-        else:
-            def _fmt_fix(f: dict) -> str:
-                return f"Group {f['group']} MD{f['matchday']} · {f['home']} vs {f['away']}"
-
-            _sel = st.selectbox("Match", _unplayed, format_func=_fmt_fix, key="mp_fix_sel")
-            _c_h, _c_a = st.columns(2)
-            _home_score = _c_h.number_input(
-                f"{flag(_sel['home'])} {_sel['home'][:14]}",
-                min_value=0, max_value=20, value=0, step=1, key="mp_hs",
-            )
-            _away_score = _c_a.number_input(
-                f"{flag(_sel['away'])} {_sel['away'][:14]}",
-                min_value=0, max_value=20, value=0, step=1, key="mp_as",
-            )
-            if st.button("Record result ✓", type="primary", use_container_width=True):
-                st.session_state["results_2026"] = save_result(
-                    home=_sel["home"], away=_sel["away"],
-                    home_score=int(_home_score), away_score=int(_away_score),
-                    group=_sel["group"], date=_sel["date"],
-                    results=st.session_state["results_2026"],
-                )
-                st.cache_data.clear()
-                st.rerun()
-
-    # ── Knockout result entry ─────────────────────────────────────────────────
-    with st.expander("➕ Enter a knockout result"):
-        _ko_rounds = ["R32", "R16", "QF", "SF", "Final"]
-        _ko_col1, _ko_col2, _ko_col3 = st.columns([2, 2, 1])
-        _ko_home = _ko_col1.selectbox("Home", sorted(ALL_TEAMS),
-                                       format_func=lambda t: f"{flag(t)} {t}", key="ko_home")
-        _ko_away = _ko_col2.selectbox("Away", sorted(ALL_TEAMS), index=1,
-                                       format_func=lambda t: f"{flag(t)} {t}", key="ko_away")
-        _ko_round = _ko_col3.selectbox("Round", _ko_rounds, key="ko_round")
-        _ko_c1, _ko_c2 = st.columns(2)
-        _ko_hs = _ko_c1.number_input(f"Goals: {_ko_home[:12]}", 0, 20, 0, key="ko_hs")
-        _ko_as = _ko_c2.number_input(f"Goals: {_ko_away[:12]}", 0, 20, 0, key="ko_as")
-        if st.button("Record knockout result ✓", type="primary", use_container_width=True, key="ko_submit"):
-            if _ko_home != _ko_away:
-                st.session_state["results_2026"] = save_result(
-                    home=_ko_home, away=_ko_away,
-                    home_score=int(_ko_hs), away_score=int(_ko_as),
-                    group=_ko_round, date="2026-07-01",
-                    results=st.session_state["results_2026"],
-                )
-                st.cache_data.clear()
-                st.rerun()
-
-    # Recorded results with ❌ remove
-    if _live_results:
-        st.markdown('<p style="font-size:12px;color:#888;margin:12px 0 4px;">Recorded results</p>',
-                    unsafe_allow_html=True)
-        for _r in sorted(_live_results, key=lambda x: x["date"]):
-            _lbl = f"{flag(_r['home'])} {_r['home']} {_r['home_score']}–{_r['away_score']} {_r['away']} {flag(_r['away'])}"
-            _rc1, _rc2 = st.columns([6, 1])
-            _rc1.markdown(f'<span style="font-size:13px;">{_lbl}</span>', unsafe_allow_html=True)
-            if _rc2.button("❌", key=f"rm_{_r['home']}_{_r['away']}"):
-                st.session_state["results_2026"] = remove_result(
-                    _r["home"], _r["away"], st.session_state["results_2026"]
-                )
-                st.cache_data.clear()
-                st.rerun()
-
-    st.divider()
+    st.caption("Predictions for every match across all stages of the tournament.")
 
     # ── Group stage matches ────────────────────────────────────────────────────
     st.markdown("### Group stage matches")
@@ -719,74 +648,6 @@ with tab4:
             if len(h2h) > 25:
                 st.caption(f"Showing 25 of {len(h2h)} matches.")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 5 — Tournament Path
-# ══════════════════════════════════════════════════════════════════════════════
-
-with tab5:
-    st.header("Tournament Path")
-    st.caption("Probability of reaching each knockout round.")
-
-    selected = st.selectbox(
-        "Select team", sorted(ALL_TEAMS),
-        format_func=lambda t: f"{flag(t)} {t}", key="path_team",
-    )
-
-    stages_ordered = ["group_win", "r16", "quarter", "semi", "finalist", "champion"]
-    stage_nice     = ["Win Group", "Reach R16", "Reach QF", "Reach SF", "Reach Final", "Champion"]
-    probs          = [sim[s].get(selected, 0) for s in stages_ordered]
-
-    fig_funnel = go.Figure(go.Funnel(
-        y=stage_nice, x=[p * 100 for p in probs],
-        textinfo="value+percent initial",
-        marker_color=["#85c1e9", "#3498db", "#1a5276", "#e74c3c", "#c0392b", "#922b21"],
-    ))
-    fig_funnel.update_layout(
-        title=f"{flag(selected)} {selected}",
-        height=400, margin=dict(t=50, b=10),
-    )
-    st.plotly_chart(fig_funnel, use_container_width=True)
-
-    group_of = next((g for g, teams in GROUPS.items() if selected in teams), None)
-    if group_of:
-        st.subheader(f"Group {group_of} rivals")
-        rivals = GROUPS[group_of]
-        cmp_data = {
-            "Team": [f"{flag(t)} {t}" for t in rivals],
-            "Elo":  [f"{elos.get(t, 1500):.0f}" for t in rivals],
-            **{STAGE_LABELS[s]: [fmt_pct(sim[s].get(t, 0)) for t in rivals]
-               for s in ["group_win", "r16", "champion"]},
-        }
-        st.dataframe(pd.DataFrame(cmp_data), use_container_width=True, hide_index=True)
-
-    st.divider()
-    st.subheader("Compare two teams")
-    cmp_col1, cmp_col2 = st.columns(2)
-    cmp_a = cmp_col1.selectbox("Team A", sorted(ALL_TEAMS),
-                                format_func=lambda t: f"{flag(t)} {t}", key="cmp_a")
-    cmp_b = cmp_col2.selectbox("Team B", sorted(ALL_TEAMS),
-                                format_func=lambda t: f"{flag(t)} {t}", key="cmp_b", index=1)
-
-    fig_cmp = go.Figure()
-    for team, color in [(cmp_a, "#ff6b35"), (cmp_b, "#3498db")]:
-        fig_cmp.add_trace(go.Scatterpolar(
-            r=[sim[s].get(team, 0) * 100 for s in stages_ordered],
-            theta=stage_nice, fill="toself",
-            name=f"{flag(team)} {team}", line_color=color, opacity=0.7,
-        ))
-    fig_cmp.update_layout(
-        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
-        height=400, margin=dict(t=30, b=10),
-    )
-    st.plotly_chart(fig_cmp, use_container_width=True)
-
-    cmp_rows = [
-        {"Stage": lbl,
-         f"{flag(cmp_a)} {cmp_a}": fmt_pct(sim[s].get(cmp_a, 0)),
-         f"{flag(cmp_b)} {cmp_b}": fmt_pct(sim[s].get(cmp_b, 0))}
-        for s, lbl in zip(stages_ordered, stage_nice)
-    ]
-    st.dataframe(pd.DataFrame(cmp_rows), use_container_width=True, hide_index=True)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 
