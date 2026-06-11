@@ -148,7 +148,80 @@ def get_elo_ratings(verbose: bool = True) -> dict[str, float]:
         for m in missing:
             print(m)
 
+    # Blend with FIFA ranking points if the file exists
+    fifa_path = os.path.join(DATA_DIR, "fifa_rankings.csv")
+    if os.path.exists(fifa_path):
+        out = _blend_with_fifa(out, fifa_path, elo_weight=0.6, verbose=verbose)
+
     return out
+
+
+def _blend_with_fifa(
+    elo_ratings: dict[str, float],
+    fifa_path: str,
+    elo_weight: float = 0.6,
+    verbose: bool = True,
+) -> dict[str, float]:
+    """
+    Blend Elo ratings (60%) with FIFA ranking points (40%), both
+    normalised to the same scale before mixing.
+
+    FIFA ranking points are scaled linearly so that the weakest
+    WC team maps to the minimum Elo and the strongest to the maximum Elo.
+    Teams absent from the FIFA file keep their raw Elo.
+    """
+    df = pd.read_csv(fifa_path)
+    df.columns = df.columns.str.strip().str.lower()
+    fifa_map: dict[str, float] = dict(zip(df["team"].str.strip(), df["points"].astype(float)))
+
+    # Map canonical names to FIFA file spellings where needed
+    FIFA_ALIASES: dict[str, str] = {
+        "United States": "United States",
+        "South Korea":   "South Korea",
+        "Ivory Coast":   "Ivory Coast",
+        "DR Congo":      "DR Congo",
+        "Bosnia and Herzegovina": "Bosnia and Herzegovina",
+        "Curaçao":       "Curaçao",
+        "Czechia":       "Czechia",
+    }
+
+    # Gather FIFA points for WC teams
+    fifa_vals: dict[str, float] = {}
+    for team in elo_ratings:
+        key = FIFA_ALIASES.get(team, team)
+        if key in fifa_map:
+            fifa_vals[team] = fifa_map[key]
+        elif team in fifa_map:
+            fifa_vals[team] = fifa_map[team]
+
+    if not fifa_vals:
+        return elo_ratings
+
+    # Normalise FIFA points onto the Elo value range
+    elo_min = min(elo_ratings.values())
+    elo_max = max(elo_ratings.values())
+    f_min   = min(fifa_vals.values())
+    f_max   = max(fifa_vals.values())
+
+    def _scale(v: float) -> float:
+        if f_max == f_min:
+            return (elo_min + elo_max) / 2
+        return (v - f_min) / (f_max - f_min) * (elo_max - elo_min) + elo_min
+
+    fifa_weight = 1.0 - elo_weight
+    blended: dict[str, float] = {}
+    for team, elo_val in elo_ratings.items():
+        if team in fifa_vals:
+            blended[team] = elo_weight * elo_val + fifa_weight * _scale(fifa_vals[team])
+        else:
+            blended[team] = elo_val
+
+    if verbose:
+        n_blended = sum(1 for t in elo_ratings if t in fifa_vals)
+        print(f"FIFA blend applied: {n_blended}/{len(elo_ratings)} teams "
+              f"({elo_weight:.0%} Elo + {fifa_weight:.0%} FIFA)")
+
+    return blended
 
 
 def get_historical_h2h(team_a: str, team_b: str) -> pd.DataFrame:
