@@ -471,10 +471,12 @@ if _active == "bet":
                 f'border-radius:8px;padding:5px 12px;text-align:center;flex-shrink:0;min-width:70px;">'
                 f'<div style="font-size:26px;font-weight:900;color:#fff;line-height:1;letter-spacing:2px;">'
                 f'{sh} – {sa}</div>'
-                f'<div style="font-size:8px;color:{score_box_color};letter-spacing:1px;margin-top:1px;">'
+                f'<div style="font-size:8px;color:{score_box_color};letter-spacing:1px;margin-top:2px;">'
                 f'{"LIVE" if is_active else "FINAL"}</div>'
-                f'<div style="font-size:9px;color:#444;margin-top:3px;letter-spacing:0;">'
-                f'Model: {mls_a}–{mls_b}</div>'
+                f'<div style="border-top:1px solid #222;margin:4px 0;"></div>'
+                f'<div style="font-size:26px;font-weight:900;color:#ff6b35;line-height:1;letter-spacing:2px;">'
+                f'{mls_a} – {mls_b}</div>'
+                f'<div style="font-size:8px;color:#ff6b35;letter-spacing:1px;margin-top:2px;">MODEL</div>'
                 f'</div>'
             )
         else:
