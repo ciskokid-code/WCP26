@@ -410,170 +410,205 @@ with tab3:
                         </div>
                     </div>""", unsafe_allow_html=True)
 
-    # ── Knockout stage predictions ─────────────────────────────────────────────
+    # ── Knockout bracket ───────────────────────────────────────────────────────
     st.divider()
-    st.markdown("### Knockout stage predictions")
-    st.caption("Teams shown are the most likely qualifiers based on current standings + simulation.")
+    st.markdown("### Knockout bracket")
+    st.caption(
+        "Each bracket section shows one team's projected path R32 → R16 → QF. "
+        "Teams only meet outside their section in the SF or Final."
+    )
 
-    # Build the R32 bracket from expected group positions
-    _grp_order = list(GROUPS.keys())  # A … L
+    _grp_order = list(GROUPS.keys())
 
-    def _match_card(team_a, prob_a, team_b, prob_b, match_no, round_name):
-        """Render one knockout match prediction card."""
-        _ko_results = {(r["home"], r["away"]): r for r in _live_results
-                       if r.get("group") in ("R32","R16","QF","SF","Final")}
-        _ko_results.update({(r["away"], r["home"]): r for r in _live_results
-                            if r.get("group") in ("R32","R16","QF","SF","Final")})
-
-        played = (team_a, team_b) in _ko_results or (team_b, team_a) in _ko_results
-        if played:
-            _res = _ko_results.get((team_a, team_b)) or _ko_results.get((team_b, team_a))
-            _hs = _res["home_score"] if _res["home"] == team_a else _res["away_score"]
-            _as = _res["away_score"] if _res["home"] == team_a else _res["home_score"]
-            bg = "#1a2a1a"
-            score_html = f'<div style="font-size:20px;font-weight:800;color:#e8e8e8;">✓ {_hs}–{_as}</div>'
-        else:
-            bg = "#1e1e2e"
-            _pred = predict_match(live_elos.get(team_a, 1500), live_elos.get(team_b, 1500))
-            _w, _d, _l = _pred["win"]*100, _pred["draw"]*100, _pred["loss"]*100
-            score_html = (
-                f'<div style="font-size:13px;font-weight:700;color:#ff6b35;">'
-                f'{_w:.0f}% / {_d:.0f}% / {_l:.0f}%</div>'
-                f'<div style="font-size:9px;color:#555;">Win / Draw / Win</div>'
-            )
-
-        p_a_str = f'<span style="font-size:10px;color:#888;"> ({prob_a*100:.0f}%)</span>' if prob_a < 0.99 else ""
-        p_b_str = f'<span style="font-size:10px;color:#888;"> ({prob_b*100:.0f}%)</span>' if prob_b < 0.99 else ""
-
-        return f"""
-        <div style="background:{bg};border:1px solid #2a2a3a;border-radius:10px;
-                    padding:10px 14px;margin-bottom:6px;">
-            <div style="font-size:9px;color:#555;text-align:center;margin-bottom:4px;">
-                {round_name} · Match {match_no}
-            </div>
-            <div style="display:flex;align-items:center;justify-content:space-between;">
-                <div style="flex:1;font-size:13px;color:#ccc;">
-                    {flag(team_a)} {team_a}{p_a_str}
-                </div>
-                <div style="text-align:center;flex-shrink:0;padding:0 8px;">
-                    {score_html}
-                </div>
-                <div style="flex:1;font-size:13px;color:#ccc;text-align:right;">
-                    {team_b}{p_b_str} {flag(team_b)}
-                </div>
-            </div>
-        </div>"""
-
-    # ── Build R32 bracket as an ordered list of 16 (team_a, team_b) pairs ──────
-    # Bracket order matters: winners of M1/M2 meet in R16, M3/M4 meet, etc.
-    # M1-M8 : Group A-H winners vs projected best-3rd teams
-    # M9-M12: Group I-L winners vs Group A-D runners-up
-    # M13-M16: Group I-L runners-up vs Group E-H runners-up
+    # ── helpers ────────────────────────────────────────────────────────────────
 
     def _proj_winner(ta: str, tb: str) -> str:
-        """Return the Elo-favoured winner of a neutral-venue match."""
         pred = predict_match(live_elos.get(ta, 1500), live_elos.get(tb, 1500))
         return ta if pred["win"] >= pred["loss"] else tb
 
-    def _advance(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
-        """Propagate one knockout round: winners of adjacent matches pair up."""
-        next_round = []
-        for i in range(0, len(pairs), 2):
-            w1 = _proj_winner(*pairs[i])
-            w2 = _proj_winner(*pairs[i + 1])
-            next_round.append((w1, w2))
-        return next_round
+    def _advance(pairs):
+        return [(_proj_winner(*pairs[i]), _proj_winner(*pairs[i + 1]))
+                for i in range(0, len(pairs), 2)]
 
-    # Compute best-3rd candidates (teams most likely to qualify as 3rd place)
-    _all_thirds = []
-    for _g in _grp_order:
-        for _t in GROUPS[_g]:
-            _p3 = max(0.0, live_sim["qualified"].get(_t, 0)
-                      - live_sim["group_win"].get(_t, 0)
-                      - max(0.0, live_sim["qualified"].get(_t, 0) - live_sim["group_win"].get(_t, 0) - 0.3))
-            _all_thirds.append((_t, live_sim["qualified"].get(_t, 0) - live_sim["group_win"].get(_t, 0)))
-    _all_thirds = sorted(_all_thirds, key=lambda x: x[1], reverse=True)
-    # Deduplicate: one entry per team
-    _seen_t = set()
+    def _win_pct(ta: str, tb: str) -> str:
+        pred = predict_match(live_elos.get(ta, 1500), live_elos.get(tb, 1500))
+        w = pred["win"] * 100
+        d = pred["draw"] * 100
+        l = pred["loss"] * 100
+        return f"{w:.0f}% / {d:.0f}% / {l:.0f}%"
+
+    def _row(ta: str, tb: str, rnd: str, winner: str) -> str:
+        """Single match row: Team A vs Team B with round label and W/D/L."""
+        pred = predict_match(live_elos.get(ta, 1500), live_elos.get(tb, 1500))
+        w, d, l = pred["win"]*100, pred["draw"]*100, pred["loss"]*100
+        # Highlight projected winner in orange
+        col_a = "#ff6b35" if winner == ta else "#ccc"
+        col_b = "#ff6b35" if winner == tb else "#ccc"
+        return f"""
+        <div style="display:flex;align-items:center;gap:6px;padding:9px 12px;
+                    background:#1e1e2e;border-radius:8px;margin-bottom:5px;
+                    border:1px solid #2a2a3a;">
+            <div style="font-size:9px;color:#555;width:28px;flex-shrink:0;text-align:center;
+                        line-height:1.2;">{rnd}</div>
+            <div style="flex:1;font-size:13px;font-weight:600;color:{col_a};min-width:0;
+                        overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                {flag(ta)} {ta}
+            </div>
+            <div style="font-size:11px;color:#ff6b35;font-weight:700;
+                        flex-shrink:0;text-align:center;min-width:80px;">
+                {w:.0f}% / {d:.0f}% / {l:.0f}%
+            </div>
+            <div style="flex:1;font-size:13px;font-weight:600;color:{col_b};min-width:0;
+                        overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+                        text-align:right;">
+                {tb} {flag(tb)}
+            </div>
+        </div>"""
+
+    # ── Build R32 bracket (16 ordered pairs) ───────────────────────────────────
+    # Best-3rd candidates: teams most likely to qualify without winning their group
+    _p2_score = {
+        t: max(0.0, live_sim["qualified"].get(t, 0) - live_sim["group_win"].get(t, 0))
+        for t in ALL_TEAMS
+    }
+    # Only teams unlikely to win their group qualify as 3rd
+    _thirds_sorted = sorted(
+        [t for t in ALL_TEAMS if live_sim["group_win"].get(t, 1) < 0.50],
+        key=lambda t: _p2_score[t], reverse=True
+    )
+    # Pick top 8, one per group if possible
     _best_thirds: list[str] = []
-    for _t, _ in _all_thirds:
-        if _t not in _seen_t and live_sim["group_win"].get(_t, 1) < 0.55:
-            _seen_t.add(_t)
+    _seen_grp: set[str] = set()
+    for _t in _thirds_sorted:
+        _tg = next(g for g, ts in GROUPS.items() if _t in ts)
+        if _tg not in _seen_grp:
+            _seen_grp.add(_tg)
             _best_thirds.append(_t)
         if len(_best_thirds) == 8:
             break
+    # Pad with strongest remaining if needed
+    for _t in _thirds_sorted:
+        if _t not in _best_thirds and len(_best_thirds) < 8:
+            _best_thirds.append(_t)
 
-    _r32_pairs: list[tuple[str, str]] = []
-    for i in range(8):
-        _w, _wp = _expected_group_pos(_grp_order[i], 1)
-        _t3 = _best_thirds[7 - i] if i < len(_best_thirds) else "TBD"
-        _t3p = live_sim["qualified"].get(_t3, 0) if _t3 != "TBD" else 0.0
-        _r32_pairs.append((_w, _t3))
-    for i in range(4):
-        _w, _wp  = _expected_group_pos(_grp_order[8 + i], 1)
-        _r, _rp  = _expected_group_pos(_grp_order[i], 2)
-        _r32_pairs.append((_w, _r))
-    for i in range(4):
-        _r1, _r1p = _expected_group_pos(_grp_order[8 + i], 2)
-        _r2, _r2p = _expected_group_pos(_grp_order[4 + i], 2)
-        _r32_pairs.append((_r1, _r2))
+    _r32: list[tuple[str, str]] = []
+    for i in range(8):                         # M1-M8: Grp A-H winners vs best-3rds
+        _w, _ = _expected_group_pos(_grp_order[i], 1)
+        _t3   = _best_thirds[7 - i] if i < len(_best_thirds) else "TBD"
+        _r32.append((_w, _t3))
+    for i in range(4):                         # M9-M12: Grp I-L winners vs Grp A-D RU
+        _w, _ = _expected_group_pos(_grp_order[8 + i], 1)
+        _r, _ = _expected_group_pos(_grp_order[i], 2)
+        _r32.append((_w, _r))
+    for i in range(4):                         # M13-M16: Grp I-L RU vs Grp E-H RU
+        _r1, _ = _expected_group_pos(_grp_order[8 + i], 2)
+        _r2, _ = _expected_group_pos(_grp_order[4 + i], 2)
+        _r32.append((_r1, _r2))
 
-    # Propagate through rounds using bracket structure
-    _r16_pairs = _advance(_r32_pairs)   # winners of M1/M2, M3/M4, … meet
-    _qf_pairs  = _advance(_r16_pairs)
-    _sf_pairs  = _advance(_qf_pairs)
-    _final_pair = _advance(_sf_pairs)[0]
+    # Propagate full bracket
+    _r16 = _advance(_r32)
+    _qf  = _advance(_r16)
+    _sf  = _advance(_qf)
+    _fin = _advance(_sf)[0]
 
-    def _qual_p(team: str, round_pairs) -> float:
-        """Rough P(team reaches this round) from simulation."""
-        stage_map = {4: "semi", 8: "quarter", 16: "r16", 32: "qualified"}
-        return live_sim.get(stage_map.get(len(round_pairs) * 2, "champion"), {}).get(team, 0)
+    # ── 4 bracket sections: each covers 4 R32 → 2 R16 → 1 QF ─────────────────
+    # Section indices into _r32 / _r16 / _qf
+    # Sec A: R32[0-3] → R16[0-1] → QF[0]
+    # Sec B: R32[4-7] → R16[2-3] → QF[1]   (SF-1: QF[0] vs QF[1])
+    # Sec C: R32[8-11] → R16[4-5] → QF[2]
+    # Sec D: R32[12-15] → R16[6-7] → QF[3]  (SF-2: QF[2] vs QF[3])
 
-    # ── R32 ────────────────────────────────────────────────────────────────────
-    with st.expander("🔵 Round of 32", expanded=True):
-        _cards = "".join(
-            _match_card(ta, live_sim["qualified"].get(ta, 0),
-                        tb, live_sim["qualified"].get(tb, 0), i + 1, "R32")
-            for i, (ta, tb) in enumerate(_r32_pairs)
-        )
-        st.markdown(_cards, unsafe_allow_html=True)
+    _sections = [
+        ("A", _r32[0:4],  _r16[0:2], _qf[0]),
+        ("B", _r32[4:8],  _r16[2:4], _qf[1]),
+        ("C", _r32[8:12], _r16[4:6], _qf[2]),
+        ("D", _r32[12:16],_r16[6:8], _qf[3]),
+    ]
+    _sf_labels = ["Section A/B winner", "Section C/D winner"]
 
-    # ── R16 ────────────────────────────────────────────────────────────────────
-    with st.expander("🟡 Round of 16"):
-        st.caption("Projected winners from R32 advance into these matchups.")
-        _cards = "".join(
-            _match_card(ta, live_sim["r16"].get(ta, 0),
-                        tb, live_sim["r16"].get(tb, 0), i + 1, "R16")
-            for i, (ta, tb) in enumerate(_r16_pairs)
-        )
-        st.markdown(_cards, unsafe_allow_html=True)
+    for _sec_id, _r32s, _r16s, _qfm in _sections:
+        _qf_w = _proj_winner(*_qfm)
+        _sec_title = f"Bracket Section {_sec_id}  —  QF favourite: {flag(_qf_w)} {_qf_w}"
+        with st.expander(_sec_title, expanded=(_sec_id == "A")):
+            _html = ""
+            _html += '<div style="font-size:10px;color:#ff6b35;font-weight:700;letter-spacing:1px;margin-bottom:6px;">ROUND OF 32</div>'
+            for _m in _r32s:
+                _html += _row(_m[0], _m[1], "R32", _proj_winner(*_m))
+            _html += '<div style="font-size:10px;color:#ff6b35;font-weight:700;letter-spacing:1px;margin:10px 0 6px;">ROUND OF 16</div>'
+            for _m in _r16s:
+                _html += _row(_m[0], _m[1], "R16", _proj_winner(*_m))
+            _html += '<div style="font-size:10px;color:#ff6b35;font-weight:700;letter-spacing:1px;margin:10px 0 6px;">QUARTER-FINAL</div>'
+            _html += _row(_qfm[0], _qfm[1], "QF", _qf_w)
+            st.markdown(_html, unsafe_allow_html=True)
 
-    # ── QF ─────────────────────────────────────────────────────────────────────
-    with st.expander("🟠 Quarter-Finals"):
-        _cards = "".join(
-            _match_card(ta, live_sim["quarter"].get(ta, 0),
-                        tb, live_sim["quarter"].get(tb, 0), i + 1, "QF")
-            for i, (ta, tb) in enumerate(_qf_pairs)
-        )
-        st.markdown(_cards, unsafe_allow_html=True)
-
-    # ── SF ─────────────────────────────────────────────────────────────────────
-    with st.expander("🔴 Semi-Finals"):
-        _cards = "".join(
-            _match_card(ta, live_sim["semi"].get(ta, 0),
-                        tb, live_sim["semi"].get(tb, 0), i + 1, "SF")
-            for i, (ta, tb) in enumerate(_sf_pairs)
-        )
-        st.markdown(_cards, unsafe_allow_html=True)
+    # ── Semi-Finals ────────────────────────────────────────────────────────────
+    st.markdown("#### Semi-Finals")
+    _sf_html = ""
+    for i, _m in enumerate(_sf):
+        _sf_html += _row(_m[0], _m[1], "SF", _proj_winner(*_m))
+    st.markdown(_sf_html, unsafe_allow_html=True)
 
     # ── Final ──────────────────────────────────────────────────────────────────
-    with st.expander("🏆 Final", expanded=True):
-        _ta, _tb = _final_pair
-        st.markdown(
-            _match_card(_ta, live_sim["finalist"].get(_ta, 0),
-                        _tb, live_sim["finalist"].get(_tb, 0), 1, "Final"),
-            unsafe_allow_html=True,
-        )
+    st.markdown("#### 🏆 Final")
+    _champ = _proj_winner(*_fin)
+    _final_html = _row(_fin[0], _fin[1], "Final", _champ)
+    _final_html += f"""
+    <div style="text-align:center;margin-top:12px;padding:14px;background:#1e1e2e;
+                border-radius:12px;border:1px solid #ff6b35;">
+        <div style="font-size:11px;color:#888;margin-bottom:4px;">Projected Champion</div>
+        <div style="font-size:28px;font-weight:800;color:#ff6b35;">
+            {flag(_champ)} {_champ}
+        </div>
+        <div style="font-size:13px;color:#888;margin-top:4px;">
+            {live_sim['champion'].get(_champ, 0)*100:.1f}% pre-tournament title probability
+        </div>
+    </div>"""
+    st.markdown(_final_html, unsafe_allow_html=True)
+
+    # ── Team path selector ────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("#### Any team's projected path")
+    _path_team = st.selectbox("Select team", sorted(ALL_TEAMS),
+                              format_func=lambda t: f"{flag(t)} {t}", key="path_sel")
+
+    # Find this team's R32 match and trace its path
+    _path_r32 = next(((a, b) for a, b in _r32 if a == _path_team or b == _path_team), None)
+    # Trace this team's projected path round by round
+    _stage_names = ["R32", "R16", "QF", "SF", "Final"]
+    _all_rounds  = [_r32, _r16, _qf, _sf, [_fin]]
+    _cur_team    = _path_team
+    _path_html   = ""
+    for _sname, _round in zip(_stage_names, _all_rounds):
+        _match = next(((a, b) for a, b in _round if a == _cur_team or b == _cur_team), None)
+        if _match is None:
+            break
+        _opp  = _match[1] if _match[0] == _cur_team else _match[0]
+        _pred = predict_match(live_elos.get(_cur_team, 1500), live_elos.get(_opp, 1500))
+        _w    = _pred["win"] * 100
+        _d    = _pred["draw"] * 100
+        _l    = _pred["loss"] * 100
+        _winner_here = _proj_winner(*_match)
+        _col_t = "#ff6b35" if _winner_here == _cur_team else "#ccc"
+        _path_html += f"""
+        <div style="display:flex;align-items:center;gap:8px;padding:9px 12px;
+                    background:#1e1e2e;border-radius:8px;margin-bottom:5px;
+                    border:1px solid #2a2a3a;">
+            <div style="font-size:9px;color:#555;width:34px;flex-shrink:0;text-align:center;">{_sname}</div>
+            <div style="font-size:13px;font-weight:600;color:{_col_t};flex:1;min-width:0;
+                        overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                vs {flag(_opp)} {_opp}
+            </div>
+            <div style="font-size:11px;color:#ff6b35;font-weight:700;flex-shrink:0;">
+                {_w:.0f}% / {_d:.0f}% / {_l:.0f}%
+            </div>
+        </div>"""
+        if _winner_here != _cur_team:
+            _path_html += '<div style="font-size:11px;color:#e74c3c;padding:4px 12px;">Eliminated here</div>'
+            break
+        _cur_team = _winner_here
+
+    st.markdown(_path_html, unsafe_allow_html=True)
+    st.caption(f"Championship probability: {live_sim['champion'].get(_path_team, 0)*100:.1f}%")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — Head-to-Head
