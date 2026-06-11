@@ -278,73 +278,50 @@ with tab1:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab2:
-    st.header("Group Stage Probabilities")
-    st.caption("Probability of each finishing position within the group.")
-
-    group_sel = st.selectbox("Select group", list(GROUPS.keys()),
-                             format_func=lambda g: f"Group {g}")
-
-    teams  = GROUPS[group_sel]
-    gp     = group_probs_all[group_sel]
-    labels_pos = ["1st", "2nd", "3rd", "4th"]
-
-    rows_g = []
-    for team in teams:
-        rows_g.append({
-            "Team": f"{flag(team)} {team}",
-            "Elo":  f"{elos.get(team, 1500):.0f}",
-            "1st":  gp[team][1],
-            "2nd":  gp[team][2],
-            "3rd":  gp[team][3],
-            "4th":  gp[team][4],
-            "_elo": elos.get(team, 1500),
-        })
-    df_g = pd.DataFrame(rows_g).sort_values("_elo", ascending=False).reset_index(drop=True)
-
-    fig_g = go.Figure()
-    colors_pos = ["#2ca02c", "#98df8a", "#ffbb78", "#d62728"]
-    for col, color in zip(labels_pos, colors_pos):
-        fig_g.add_trace(go.Bar(
-            name=col, x=df_g["Team"], y=df_g[col] * 100,
-            marker_color=color,
-            text=[fmt_pct(v) for v in df_g[col]],
-            textposition="inside", insidetextanchor="middle",
-        ))
-    fig_g.update_layout(
-        barmode="stack",
-        yaxis=dict(title="Probability (%)", range=[0, 100]),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=320, margin=dict(t=20, b=60),
-    )
-    st.plotly_chart(fig_g, use_container_width=True)
-
-    fmt = {c: "{:.1%}" for c in labels_pos}
-    st.dataframe(
-        df_g[["Team", "Elo", "1st", "2nd", "3rd", "4th"]].style.format(fmt),
-        use_container_width=True, hide_index=True,
+    st.markdown(
+        '<h2 style="margin-bottom:4px;">Groups</h2>'
+        '<p style="color:#888;font-size:13px;margin-bottom:20px;">'
+        'Bar shows chance to win the group. Percentages are 1st / 2nd finish probability.</p>',
+        unsafe_allow_html=True,
     )
 
-    st.divider()
-    st.subheader("Qualification bubble chart")
-    qual_rows = []
-    for g, g_teams in GROUPS.items():
-        for team in g_teams:
-            gpp = group_probs_all[g][team]
-            qual_p = gpp[1] + gpp[2] + (8 / 12) * gpp[3]
-            qual_rows.append({
-                "Group": f"Group {g}", "Team": f"{flag(team)} {team}",
-                "Win Group": gpp[1], "Qualify (est.)": min(qual_p, 1.0),
-                "Elo": elos.get(team, 1500),
-            })
-    df_qual = pd.DataFrame(qual_rows).sort_values(["Group", "Elo"], ascending=[True, False])
-    fig_heat = px.scatter(
-        df_qual, x="Qualify (est.)", y="Win Group",
-        color="Group", text="Team", size="Elo", size_max=20,
-        labels={"Qualify (est.)": "Est. qualification prob.", "Win Group": "Group-win prob."},
-    )
-    fig_heat.update_traces(textposition="top center", textfont_size=8)
-    fig_heat.update_layout(height=500, margin=dict(t=30, b=20))
-    st.plotly_chart(fig_heat, use_container_width=True)
+    for _g, _g_teams in GROUPS.items():
+        _gp = group_probs_all[_g]
+        # Sort teams by group-win probability descending
+        _sorted = sorted(_g_teams, key=lambda t: _gp[t][1], reverse=True)
+        _max_p1 = _gp[_sorted[0]][1] or 0.01
+
+        _html = (
+            f'<div style="margin-bottom:24px;">'
+            f'<div style="font-size:13px;font-weight:700;color:#ff6b35;letter-spacing:1px;'
+            f'text-transform:uppercase;margin-bottom:8px;">Group {_g}</div>'
+        )
+        for _t in _sorted:
+            _p1  = _gp[_t][1]
+            _p2  = _gp[_t][2]
+            _bar = (_p1 / _max_p1) * 100
+            _html += f"""
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;
+                        padding:9px 12px;background:#1e1e2e;border-radius:8px;
+                        border:1px solid #2a2a3a;">
+                <div style="font-size:19px;flex-shrink:0;">{flag(_t)}</div>
+                <div style="flex:1;font-size:13px;font-weight:500;min-width:0;
+                            overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{_t}</div>
+                <div style="width:80px;background:#2a2a2a;border-radius:4px;
+                            height:7px;flex-shrink:0;overflow:hidden;">
+                    <div style="background:#ff6b35;width:{_bar:.1f}%;height:7px;border-radius:4px;"></div>
+                </div>
+                <div style="width:96px;text-align:right;font-size:12px;color:#aaa;
+                            flex-shrink:0;white-space:nowrap;">
+                    1st <b style="color:#ff6b35;">{_p1*100:.0f}%</b>
+                    &nbsp;·&nbsp;
+                    2nd <b style="color:#888;">{_p2*100:.0f}%</b>
+                </div>
+            </div>"""
+        _html += "</div>"
+        st.markdown(_html, unsafe_allow_html=True)
+
+    st.caption(f"Model: Elo + Poisson · {n_sims:,} simulations")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 3 — Match Predictor
