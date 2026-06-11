@@ -457,9 +457,12 @@ if _active == "bet":
             f'text-transform:uppercase;margin-bottom:8px;">{label}{today_badge}{live_badge}</div>'
         ) if (label or today_badge or live_badge) else ""
 
-        winner = home if pr["win"] >= pr["loss"] else away
-        hcol = "#ff6b35" if winner == home else "#ddd"
-        acol = "#ff6b35" if winner == away else "#ddd"
+        if mls_a == mls_b:
+            hcol = acol = "#ddd"
+        elif mls_a > mls_b:
+            hcol, acol = "#ff6b35", "#ddd"
+        else:
+            hcol, acol = "#ddd", "#ff6b35"
 
         # Score box — live/final score on top, model pick below
         if has_live and (is_active or is_final):
