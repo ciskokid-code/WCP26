@@ -25,19 +25,21 @@ from src.config import GROUPS
 # Goal expectation model
 # ---------------------------------------------------------------------------
 
-# Calibrated so that μ = 1.15 at Elo parity and shifts ±0.35 at ±400-pt gap
-_BASE_GOALS = 1.15
+# Ratio model: goal rates scale exponentially with Elo gap.
+# BASE = avg goals/team at parity; K = exponent (400-pt gap → 1.82× more goals).
+# Calibrated so Germany (1977) vs Curaçao (1435) → mu ≈ 3.4 vs 0.7,
+# giving 3-0 as the most likely scoreline, consistent with real mismatches.
+_BASE_GOALS = 1.5
 _ELO_SCALE = 400.0
-_GOAL_SENSITIVITY = 0.35  # max shift from base at ±400 Elo pts
+_K = 1.2
 
 
 def elo_to_expected_goals(elo_a: float, elo_b: float) -> tuple[float, float]:
     """Return (mu_a, mu_b) expected goals for a neutral-venue match."""
-    dr = elo_a - elo_b
-    E_a = 1.0 / (1.0 + 10.0 ** (-dr / _ELO_SCALE))
-    mu_a = _BASE_GOALS * (1.0 + _GOAL_SENSITIVITY * (E_a - 0.5) * 2.0)
-    mu_b = _BASE_GOALS * (1.0 - _GOAL_SENSITIVITY * (E_a - 0.5) * 2.0)
-    return max(0.15, mu_a), max(0.15, mu_b)
+    ratio = float(np.exp(_K * (elo_a - elo_b) / _ELO_SCALE))
+    mu_a = _BASE_GOALS * ratio ** 0.5
+    mu_b = _BASE_GOALS / ratio ** 0.5
+    return max(0.2, mu_a), max(0.2, mu_b)
 
 
 # ---------------------------------------------------------------------------

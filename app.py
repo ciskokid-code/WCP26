@@ -669,145 +669,170 @@ with tab4:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab5:
-    TODAY = "2026-06-11"
+    _BP_TODAY = "2026-06-11"
 
     st.markdown(
         '<h2 style="margin-bottom:2px;">Bet Predictor</h2>'
         '<p style="color:#888;font-size:13px;margin-bottom:16px;">'
-        'Model-predicted exact scores for every match, ranked by probability. '
-        'Based on Elo + Poisson — same engine that powers the bracket.</p>',
+        'Model pick for every match. Score calibrated against historical WC averages '
+        '(~2.7 goals/game) using Elo-ratio Poisson.</p>',
         unsafe_allow_html=True,
     )
 
-    # ── Matchday filter ────────────────────────────────────────────────────────
+    # ── Filter ─────────────────────────────────────────────────────────────────
     _all_fixtures = get_schedule()
-    _md_choice = st.radio(
-        "Matchday",
-        ["Today", "All MD1", "All MD2", "All MD3"],
+    _bp_choice = st.radio(
+        "Round",
+        ["Today", "MD1", "MD2", "MD3", "Knockout"],
         horizontal=True,
         label_visibility="collapsed",
     )
 
-    if _md_choice == "Today":
-        _shown = [f for f in _all_fixtures if f["date"] == TODAY]
-    elif _md_choice == "All MD1":
-        _shown = [f for f in _all_fixtures if f["matchday"] == 1]
-    elif _md_choice == "All MD2":
-        _shown = [f for f in _all_fixtures if f["matchday"] == 2]
-    else:
-        _shown = [f for f in _all_fixtures if f["matchday"] == 3]
-
-    # ── Group fixtures by date for headers ─────────────────────────────────────
-    _by_date: dict[str, list] = {}
-    for _f in _shown:
-        _by_date.setdefault(_f["date"], []).append(_f)
-
-    _MONTH = {
-        "06": "June",
-    }
-
-    def _date_label(d: str) -> str:
+    # ── Helpers ────────────────────────────────────────────────────────────────
+    def _bp_date_label(d: str) -> str:
         _y, _m, _day = d.split("-")
-        _suffix = {"1":"st","2":"nd","3":"rd"}.get(_day.lstrip("0")[-1], "th")
-        if _day.lstrip("0") in ("11","12","13"):
-            _suffix = "th"
-        return f"{_MONTH.get(_m, _m)} {int(_day)}{_suffix}, {_y}"
+        _n = int(_day)
+        _sfx = "th" if 11 <= _n <= 13 else {1:"st",2:"nd",3:"rd"}.get(_n % 10, "th")
+        return f"June {_n}{_sfx}, {_y}"
 
-    def _bet_card(fix: dict, ea: float, eb: float, is_today: bool) -> str:
-        home, away = fix["home"], fix["away"]
-        pr = predict_match(ea, eb)
-        top = _top_scores(ea, eb, n=5)
+    def _score_card(home: str, away: str, ea: float, eb: float,
+                    label: str = "", is_today: bool = False) -> str:
+        """Scoreboard-style match card: teams left/right, big score in centre."""
+        pr    = predict_match(ea, eb)
+        top   = _top_scores(ea, eb, n=6)
         mls_a, mls_b = pr["most_likely_score"]
 
-        border = "#ff6b35" if is_today else "#2a2a3a"
-        bg     = "#1e1e35" if is_today else "#1e1e2e"
+        # Alternative scorelines (skip the top pick itself)
+        alts  = [(ga, gb, p) for ga, gb, p in top if not (ga == mls_a and gb == mls_b)][:3]
+        alt_txt = "  ·  ".join(
+            f"{home[:3].upper()} {ga}–{gb} {away[:3].upper()} ({p*100:.0f}%)"
+            for ga, gb, p in alts
+        )
 
-        # Score rows
-        score_rows = ""
-        for ga, gb, p in top:
-            is_ml = (ga == mls_a and gb == mls_b)
-            row_bg   = "background:#2d1a08;border-radius:4px;padding:1px 4px;" if is_ml else "padding:1px 4px;"
-            name_col = "#ff6b35" if is_ml else "#888"
-            pct_col  = "#ff6b35" if is_ml else "#555"
-            star     = " ★" if is_ml else ""
-            score_rows += (
-                f'<div style="display:flex;justify-content:space-between;margin-bottom:3px;{row_bg}">'
-                f'<span style="font-size:12px;color:{name_col};font-weight:{"700" if is_ml else "400"};">'
-                f'{home[:3].upper()} {ga}–{gb} {away[:3].upper()}</span>'
-                f'<span style="font-size:12px;color:{pct_col};font-weight:{"700" if is_ml else "400"};">'
-                f'{p*100:.1f}%{star}</span>'
-                f'</div>'
-            )
+        border = "#ff6b35" if is_today else "#2a2a3a"
+        bg     = "#1b1b2e" if is_today else "#181828"
 
         today_badge = (
-            '<div style="font-size:10px;font-weight:700;color:#ff6b35;'
-            'background:#2a1000;padding:3px 10px;border-radius:12px;'
-            'white-space:nowrap;">TODAY</div>'
+            '<span style="font-size:10px;font-weight:700;color:#ff6b35;'
+            'background:#2a1000;padding:2px 8px;border-radius:10px;margin-left:8px;">'
+            'TODAY</span>'
             if is_today else ""
         )
+        lbl_html = (
+            f'<div style="font-size:10px;color:#666;letter-spacing:1px;'
+            f'text-transform:uppercase;margin-bottom:8px;">{label}{today_badge}</div>'
+            if label else ""
+        )
+
+        # Which team is projected winner? colour their name orange
+        winner = home if pr["win"] >= pr["loss"] else away
+        hcol = "#ff6b35" if winner == home else "#ddd"
+        acol = "#ff6b35" if winner == away else "#ddd"
 
         return (
             f'<div style="background:{bg};border:1px solid {border};'
-            f'border-radius:10px;padding:14px;margin-bottom:10px;">'
-            # Header
-            f'<div style="display:flex;justify-content:space-between;'
-            f'align-items:flex-start;margin-bottom:10px;">'
-            f'<div>'
-            f'<div style="font-size:15px;font-weight:700;">'
-            f'{flag(home)} {home} <span style="color:#444;">vs</span> {flag(away)} {away}'
+            f'border-radius:10px;padding:12px 14px;margin-bottom:10px;">'
+            f'{lbl_html}'
+            # Scoreboard row
+            f'<div style="display:flex;align-items:center;gap:8px;">'
+            # Home
+            f'<div style="flex:1;text-align:right;">'
+            f'<div style="font-size:15px;font-weight:700;color:{hcol};">'
+            f'{flag(home)} {home}</div>'
+            f'<div style="font-size:11px;color:#555;margin-top:2px;">'
+            f'{pr["win"]*100:.0f}% win</div>'
             f'</div>'
-            f'<div style="font-size:11px;color:#555;margin-top:1px;">'
-            f'Group {fix["group"]} · Matchday {fix["matchday"]}'
+            # Score box
+            f'<div style="background:#0d1117;border:2px solid {"#ff6b35" if is_today else "#333"};'
+            f'border-radius:8px;padding:6px 12px;text-align:center;flex-shrink:0;min-width:70px;">'
+            f'<div style="font-size:26px;font-weight:900;color:#fff;line-height:1;'
+            f'letter-spacing:2px;">{mls_a} – {mls_b}</div>'
+            f'<div style="font-size:8px;color:#ff6b35;letter-spacing:1px;margin-top:2px;">'
+            f'MODEL PICK</div>'
+            f'</div>'
+            # Away
+            f'<div style="flex:1;text-align:left;">'
+            f'<div style="font-size:15px;font-weight:700;color:{acol};">'
+            f'{flag(away)} {away}</div>'
+            f'<div style="font-size:11px;color:#555;margin-top:2px;">'
+            f'{pr["loss"]*100:.0f}% win</div>'
             f'</div>'
             f'</div>'
-            f'{today_badge}'
-            f'</div>'
-            # Body: scores + odds side by side
-            f'<div style="display:flex;gap:14px;align-items:flex-start;">'
-            # Left: top scores
-            f'<div style="flex:1;">'
-            f'<div style="font-size:10px;color:#555;letter-spacing:1px;'
-            f'text-transform:uppercase;margin-bottom:5px;">Top scores ★ = most likely</div>'
-            f'{score_rows}'
-            f'</div>'
-            # Right: win/draw/loss
-            f'<div style="min-width:88px;border-left:1px solid #2a2a3a;'
-            f'padding-left:12px;text-align:left;">'
-            f'<div style="font-size:10px;color:#555;letter-spacing:1px;'
-            f'text-transform:uppercase;margin-bottom:5px;">Outcome</div>'
-            f'<div style="font-size:12px;margin-bottom:3px;">'
-            f'{flag(home)} Win &nbsp;<b style="color:#ff6b35;">{pr["win"]*100:.0f}%</b></div>'
-            f'<div style="font-size:12px;margin-bottom:3px;">'
-            f'Draw &nbsp;<b style="color:#888;">{pr["draw"]*100:.0f}%</b></div>'
-            f'<div style="font-size:12px;">'
-            f'{flag(away)} Win &nbsp;<b style="color:#4a9eff;">{pr["loss"]*100:.0f}%</b></div>'
-            f'</div>'
+            # Draw + alternatives row
+            f'<div style="margin-top:8px;font-size:11px;color:#555;text-align:center;">'
+            f'Draw {pr["draw"]*100:.0f}%'
+            f'<span style="margin:0 8px;color:#2a2a3a;">|</span>'
+            f'<span style="color:#444;">Also: {alt_txt}</span>'
             f'</div>'
             f'</div>'
         )
 
-    # ── Render cards ───────────────────────────────────────────────────────────
-    if not _shown:
-        st.info("No matches scheduled for the selected filter.")
+    # ── Group stage view ───────────────────────────────────────────────────────
+    if _bp_choice != "Knockout":
+        if _bp_choice == "Today":
+            _shown = [f for f in _all_fixtures if f["date"] == _BP_TODAY]
+        elif _bp_choice == "MD1":
+            _shown = [f for f in _all_fixtures if f["matchday"] == 1]
+        elif _bp_choice == "MD2":
+            _shown = [f for f in _all_fixtures if f["matchday"] == 2]
+        else:
+            _shown = [f for f in _all_fixtures if f["matchday"] == 3]
+
+        _by_date2: dict[str, list] = {}
+        for _f in _shown:
+            _by_date2.setdefault(_f["date"], []).append(_f)
+
+        if not _shown:
+            st.info("No matches for this filter.")
+        else:
+            for _date, _fixtures in sorted(_by_date2.items()):
+                _is_today = (_date == _BP_TODAY)
+                _hdr_col  = "#ff6b35" if _is_today else "#777"
+                st.markdown(
+                    f'<div style="font-size:12px;font-weight:700;color:{_hdr_col};'
+                    f'letter-spacing:1.5px;text-transform:uppercase;'
+                    f'margin:20px 0 8px;border-bottom:1px solid #222;padding-bottom:4px;">'
+                    f'{"🔴 " if _is_today else ""}{_bp_date_label(_date)}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                for _fx in _fixtures:
+                    _ea2 = live_elos.get(_fx["home"], 1500)
+                    _eb2 = live_elos.get(_fx["away"], 1500)
+                    _lbl = f"Group {_fx['group']} · Matchday {_fx['matchday']}"
+                    st.markdown(
+                        _score_card(_fx["home"], _fx["away"], _ea2, _eb2,
+                                    label=_lbl, is_today=_is_today),
+                        unsafe_allow_html=True,
+                    )
+
+    # ── Knockout view ──────────────────────────────────────────────────────────
     else:
-        for _date, _fixtures in sorted(_by_date.items()):
-            _is_today = (_date == TODAY)
-            _hdr_color = "#ff6b35" if _is_today else "#aaa"
+        # Reuse the bracket data already computed for tab3
+        _ko_rounds = [
+            ("Round of 32", _r32),
+            ("Round of 16", _r16),
+            ("Quarter-finals", _qf),
+            ("Semi-finals", _sf),
+            ("Final", [_fin]),
+        ]
+        for _rnd_name, _pairs in _ko_rounds:
             st.markdown(
-                f'<div style="font-size:13px;font-weight:700;color:{_hdr_color};'
-                f'letter-spacing:1px;text-transform:uppercase;'
-                f'margin:18px 0 8px 0;border-bottom:1px solid #2a2a3a;'
-                f'padding-bottom:4px;">'
-                f'{"🔴 " if _is_today else ""}{_date_label(_date)}'
-                f'</div>',
+                f'<div style="font-size:12px;font-weight:700;color:#ff6b35;'
+                f'letter-spacing:1.5px;text-transform:uppercase;'
+                f'margin:20px 0 8px;border-bottom:1px solid #222;padding-bottom:4px;">'
+                f'{_rnd_name}</div>',
                 unsafe_allow_html=True,
             )
-            for _fx in _fixtures:
-                _ea = live_elos.get(_fx["home"], 1500)
-                _eb = live_elos.get(_fx["away"], 1500)
-                st.markdown(_bet_card(_fx, _ea, _eb, _is_today), unsafe_allow_html=True)
+            for _ta, _tb in _pairs:
+                _ea3 = live_elos.get(_ta, 1500)
+                _eb3 = live_elos.get(_tb, 1500)
+                st.markdown(
+                    _score_card(_ta, _tb, _ea3, _eb3, label=_rnd_name),
+                    unsafe_allow_html=True,
+                )
 
-    st.caption("Probabilities from Elo + Poisson model · ★ = single most likely exact score")
+    st.caption("Score = single most likely exact result · Elo-ratio Poisson model, calibrated to WC averages")
 
 
 # ── Footer ────────────────────────────────────────────────────────────────────
