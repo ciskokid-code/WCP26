@@ -5,6 +5,7 @@ Run: streamlit run app.py
 
 from __future__ import annotations
 
+import datetime
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -493,7 +494,7 @@ with tab2:
         unsafe_allow_html=True,
     )
 
-    _BP_TODAY     = "2026-06-11"
+    _BP_TODAY     = datetime.date.today().strftime("%Y-%m-%d")
     _all_fixtures = get_schedule()
     _bp_choice    = st.radio("Round", ["Today", "MD1", "MD2", "MD3", "Knockout"],
                               horizontal=True, label_visibility="collapsed")
